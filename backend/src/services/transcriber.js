@@ -6,11 +6,14 @@ import Groq from "groq-sdk";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-small";
-const TRANSCRIPTION_CHUNK_SECONDS = Math.max(20, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 60));
-const TRANSCRIPTION_MIN_CHUNK_SECONDS = Math.max(10, Number(process.env.TRANSCRIPTION_MIN_CHUNK_SECONDS || 20));
+const TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS = Math.max(60, Number(process.env.TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS || 5400));
+const TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES = Math.max(1, Number(process.env.TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES || 60 * 1024 * 1024));
+const TRANSCRIPTION_CHUNK_SECONDS = Math.max(600, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 1200));
+const TRANSCRIPTION_MIN_CHUNK_SECONDS = Math.max(300, Number(process.env.TRANSCRIPTION_MIN_CHUNK_SECONDS || 600));
+const MAX_TRANSCRIPTION_CHUNKS = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_CHUNKS || 3));
 const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 1));
-const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 2));
-const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 1000);
+const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 1));
+const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 3000);
 const AUDIO_EXTRACTION_THREADS = Math.max(1, Number(process.env.AUDIO_EXTRACTION_THREADS || 1));
 const AUDIO_BITRATE = process.env.AUDIO_BITRATE || "32k";
 
@@ -24,7 +27,22 @@ export async function transcribeVideo(filePath) {
   await fs.promises.mkdir(chunkRoot, { recursive: true });
 
   const duration = await getMediaDuration(filePath);
-  const chunks = buildChunkRanges(duration, TRANSCRIPTION_CHUNK_SECONDS);
+
+  if (duration <= TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS) {
+    const fullAudioPath = path.join(chunkRoot, "full.mp3");
+    await extractAudioChunk(filePath, fullAudioPath, 0, duration);
+    const stats = await fs.promises.stat(fullAudioPath);
+    if (stats.size <= TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES) {
+      try {
+        return await transcribeFullAudio(fullAudioPath, 0);
+      } catch (error) {
+        if (!isRecoverableTranscriptionError(error)) throw error;
+        console.warn("[transcriber] full audio transcription failed, falling back to chunked transcription.");
+      }
+    }
+  }
+
+  const chunks = buildChunkRanges(duration, TRANSCRIPTION_CHUNK_SECONDS, MAX_TRANSCRIPTION_CHUNKS);
 
   try {
     const transcripts = await mapWithConcurrencySafe(chunks, TRANSCRIPTION_CONCURRENCY, async ({ start, duration }, index) => {
@@ -55,13 +73,11 @@ async function transcribeVideoRange(videoPath, chunkRoot, start, duration, index
 async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, audioPath) {
   try {
     const response = await retryTranscriptionChunk(audioPath);
-    return (response?.segments || []).map((segment) => ({
-      start: Number(segment.start || 0) + start,
-      end: Number(segment.end || 0) + start,
-      text: String(segment.text || "").trim(),
-    }));
+    return parseTranscriptionResponse(response, start);
   } catch (error) {
-    if (duration > TRANSCRIPTION_MIN_CHUNK_SECONDS && isRecoverableTranscriptionError(error)) {
+    const message = String(error?.message || "").toLowerCase();
+    const isSizeError = message.includes("request entity too large") || message.includes("413");
+    if (duration > TRANSCRIPTION_MIN_CHUNK_SECONDS && isSizeError) {
       const half = Math.max(TRANSCRIPTION_MIN_CHUNK_SECONDS, Math.floor(duration / 2));
       const left = await transcribeVideoRange(videoPath, chunkRoot, start, half, `${String(start).padStart(4, "0")}-a`);
       const right = await transcribeVideoRange(videoPath, chunkRoot, start + half, duration - half, `${String(start + half).padStart(4, "0")}-b`);
@@ -69,6 +85,19 @@ async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, durati
     }
     throw error;
   }
+}
+
+async function transcribeFullAudio(audioPath, offset) {
+  const response = await retryTranscriptionChunk(audioPath);
+  return parseTranscriptionResponse(response, offset);
+}
+
+function parseTranscriptionResponse(response, offset) {
+  return (response?.segments || []).map((segment) => ({
+    start: Number(segment.start || 0) + offset,
+    end: Number(segment.end || 0) + offset,
+    text: String(segment.text || "").trim(),
+  }));
 }
 
 function getMediaDuration(filePath) {
@@ -84,13 +113,14 @@ function getMediaDuration(filePath) {
   });
 }
 
-function buildChunkRanges(duration, chunkSeconds) {
+function buildChunkRanges(duration, chunkSeconds, maxChunks = MAX_TRANSCRIPTION_CHUNKS) {
+  const effectiveChunkSeconds = Math.min(chunkSeconds, Math.max(1, Math.ceil(duration / maxChunks)));
   const chunks = [];
   let start = 0;
   while (start < duration) {
     const remaining = duration - start;
-    chunks.push({ start, duration: Math.min(chunkSeconds, remaining) });
-    start += chunkSeconds;
+    chunks.push({ start, duration: Math.min(effectiveChunkSeconds, remaining) });
+    start += effectiveChunkSeconds;
   }
   return chunks;
 }
@@ -149,12 +179,24 @@ async function retryTranscriptionChunk(audioPath) {
       });
     } catch (error) {
       lastError = error;
+      const message = String(error?.message || "").toLowerCase();
       if (attempt === MAX_TRANSCRIPTION_RETRIES) break;
-      console.warn(`[transcriber] transcription attempt ${attempt} failed: ${error.message}. Retrying...`);
-      await new Promise((resolve) => setTimeout(resolve, TRANSCRIPTION_RETRY_DELAY_MS));
+      if (message.includes("rate limit")) {
+        const wait = parseRateLimitWaitSeconds(message) || TRANSCRIPTION_RETRY_DELAY_MS / 1000;
+        console.warn(`[transcriber] rate limit hit, waiting ${wait}s before retrying...`);
+        await new Promise((resolve) => setTimeout(resolve, wait * 1000));
+      } else {
+        console.warn(`[transcriber] transcription attempt ${attempt} failed: ${error.message}. Retrying...`);
+        await new Promise((resolve) => setTimeout(resolve, TRANSCRIPTION_RETRY_DELAY_MS));
+      }
     }
   }
   throw lastError;
+}
+
+function parseRateLimitWaitSeconds(message) {
+  const match = message.match(/please try again in (\d+(?:\.\d+)?)s/i);
+  return match ? Number(match[1]) : undefined;
 }
 
 function isRecoverableTranscriptionError(error) {
@@ -162,7 +204,6 @@ function isRecoverableTranscriptionError(error) {
   return (
     message.includes("internal server error") ||
     message.includes("request entity too large") ||
-    message.includes("rate limit") ||
     message.includes("timeout") ||
     message.includes("413")
   );

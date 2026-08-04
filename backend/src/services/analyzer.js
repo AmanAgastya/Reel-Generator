@@ -2,17 +2,17 @@ import Groq from "groq-sdk";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-70b-versatile";
+const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-small";
 
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
-const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
-const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 3000);
+const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 4);
+const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 48000);
 const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 1);
 const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 2));
-const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 1200);
-// Transcript chunks are independent LLM calls. Keep chunk sizes very small and
-// concurrency single-threaded on memory-limited hosts.
+const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 2000);
+const ANALYSIS_MIN_INTERVAL_MS = Number(process.env.ANALYSIS_MIN_INTERVAL_MS || 8000);
+// Transcript chunks are analyzed conservatively to stay under Groq TPM limits.
 const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 1));
 
 function buildTranscriptLines(segments) {
@@ -72,7 +72,8 @@ Respond ONLY with JSON, no prose, in this exact shape:
           { role: "user", content: transcriptText },
         ],
         response_format: { type: "json_object" },
-        temperature: 0.3,
+        temperature: 0.2,
+        max_output_tokens: 600,
       })
     );
 
@@ -87,11 +88,10 @@ Respond ONLY with JSON, no prose, in this exact shape:
       rankScore: Number(clip.rankScore),
     }));
   } catch (error) {
-    const isRateLimit =
-      error?.message?.includes("rate_limit_exceeded") ||
-      error?.message?.includes("Request too large");
+    const message = String(error?.message || "").toLowerCase();
+    const isSizeError = message.includes("request too large") || message.includes("413");
 
-    if (isRateLimit && transcriptText.length > 1000) {
+    if (isSizeError && transcriptText.length > 1000) {
       const splitPoint = Math.max(transcriptText.lastIndexOf("\n", transcriptText.length / 2), transcriptText.length / 4);
       const left = transcriptText.slice(0, splitPoint);
       const right = transcriptText.slice(splitPoint);
@@ -113,12 +113,28 @@ async function retryAnalysisRequest(fn) {
       return await fn();
     } catch (error) {
       lastError = error;
+      const message = String(error?.message || "").toLowerCase();
       if (attempt === MAX_ANALYSIS_RETRIES) break;
-      console.warn(`[analyzer] analysis attempt ${attempt} failed: ${error.message}. Retrying...`);
-      await new Promise((resolve) => setTimeout(resolve, ANALYSIS_RETRY_DELAY_MS));
+      if (message.includes("rate limit")) {
+        const wait = parseRateLimitWaitSeconds(message) || ANALYSIS_RETRY_DELAY_MS / 1000;
+        console.warn(`[analyzer] rate limit hit, waiting ${wait}s before retrying...`);
+        await delay(wait * 1000);
+      } else {
+        console.warn(`[analyzer] analysis attempt ${attempt} failed: ${error.message}. Retrying...`);
+        await delay(ANALYSIS_RETRY_DELAY_MS);
+      }
     }
   }
   throw lastError;
+}
+
+function parseRateLimitWaitSeconds(message) {
+  const match = message.match(/please try again in (\d+(?:\.\d+)?)s/i);
+  return match ? Number(match[1]) : undefined;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeClips(clips, ownerCreditName) {
@@ -177,23 +193,45 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
   );
 
   const transcriptLines = buildTranscriptLines(segments);
-  const transcriptChunks = chunkTranscript(transcriptLines);
+  const fullTranscript = transcriptLines.join("\n");
+  const transcriptChunks = fullTranscript.length <= MAX_ANALYSIS_CHARS ? [fullTranscript] : chunkTranscript(transcriptLines);
 
   // Chunks are analyzed concurrently (was: sequential await in a for loop,
   // which meant a 4-chunk transcript took 4x as long as it needed to).
-  const chunkResults = await mapWithConcurrency(
-    transcriptChunks,
-    ANALYSIS_CONCURRENCY,
-    async (chunkText, chunkIndex) => {
+  let chunkResults;
+  if (ANALYSIS_CONCURRENCY === 1) {
+    chunkResults = [];
+    for (let chunkIndex = 0; chunkIndex < transcriptChunks.length; chunkIndex += 1) {
       try {
-        const chunkClips = await analyzeTranscriptChunk(chunkText, chunkIndex, MAX_CANDIDATE_CLIPS_PER_CHUNK);
-        return chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK);
+        const chunkClips = await analyzeTranscriptChunk(
+          transcriptChunks[chunkIndex],
+          chunkIndex,
+          MAX_CANDIDATE_CLIPS_PER_CHUNK
+        );
+        chunkResults.push(chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK));
       } catch (error) {
         console.error("[analyzer] chunk analysis failed:", error);
-        return [];
+        chunkResults.push([]);
+      }
+      if (chunkIndex < transcriptChunks.length - 1) {
+        await delay(ANALYSIS_MIN_INTERVAL_MS);
       }
     }
-  );
+  } else {
+    chunkResults = await mapWithConcurrency(
+      transcriptChunks,
+      ANALYSIS_CONCURRENCY,
+      async (chunkText, chunkIndex) => {
+        try {
+          const chunkClips = await analyzeTranscriptChunk(chunkText, chunkIndex, MAX_CANDIDATE_CLIPS_PER_CHUNK);
+          return chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK);
+        } catch (error) {
+          console.error("[analyzer] chunk analysis failed:", error);
+          return [];
+        }
+      }
+    );
+  }
   const candidateClips = chunkResults.flat();
 
   const rankedClips = normalizeClips(

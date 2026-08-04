@@ -8,8 +8,8 @@ const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
 // "veryfast" is only marginally slower than "ultrafast" but produces
 // noticeably cleaner, less blocky output at the same CRF - worth it since
 // clips are short (15-60s) and the visual quality is the whole point.
-const CLIP_VIDEO_PRESET = process.env.CLIP_VIDEO_PRESET || "veryfast";
-const CLIP_VIDEO_CRF = Number(process.env.CLIP_VIDEO_CRF || 23);
+const CLIP_VIDEO_PRESET = process.env.CLIP_VIDEO_PRESET || "ultrafast";
+const CLIP_VIDEO_CRF = Number(process.env.CLIP_VIDEO_CRF || 28);
 const CLIP_RENDER_THREADS = Math.max(1, Number(process.env.CLIP_RENDER_THREADS || 1));
 const CLIP_AUDIO_BITRATE = process.env.CLIP_AUDIO_BITRATE || "128k";
 
