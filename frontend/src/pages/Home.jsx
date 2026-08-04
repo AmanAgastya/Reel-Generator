@@ -24,6 +24,11 @@ export default function Home() {
     setSubmitting(true);
     setUploadProgress(mode === "upload" ? 0 : null);
     setError("");
+    // Let React paint the 0% state before starting a potentially large
+    // multipart request; otherwise some browsers show no update initially.
+    if (mode === "upload") {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
     try {
       const job =
         mode === "url"

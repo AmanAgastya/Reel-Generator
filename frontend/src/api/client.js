@@ -53,8 +53,14 @@ export async function createJobFromUpload({ file, ownershipConfirmed, ownerCredi
   const { data } = await client.post("/jobs/from-upload", form, {
     headers: { "Content-Type": "multipart/form-data" },
     onUploadProgress: (event) => {
-      if (!event.total) return;
-      onProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      const progress =
+        typeof event.progress === "number"
+          ? event.progress
+          : event.total
+          ? event.loaded / event.total
+          : null;
+      if (progress === null) return;
+      onProgress?.(Math.min(100, Math.round(progress * 100)));
     },
   });
   return data;
