@@ -51,7 +51,8 @@ export async function createJobFromUpload({ file, ownershipConfirmed, ownerCredi
   form.append("ownershipConfirmed", ownershipConfirmed);
   form.append("ownerCreditName", ownerCreditName);
   const { data } = await client.post("/jobs/from-upload", form, {
-    headers: { "Content-Type": "multipart/form-data" },
+    // Do not set Content-Type manually: the browser supplies the multipart
+    // boundary that multer needs to parse a large file upload.
     onUploadProgress: (event) => {
       const progress =
         typeof event.progress === "number"

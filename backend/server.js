@@ -54,6 +54,14 @@ const PORT = process.env.PORT || 5000;
 connectDB().then(() => {
   const server = app.listen(PORT, () => console.log(`[server] listening on port ${PORT}`));
 
+  // Node defaults to a five-minute request timeout. A large video on a slower
+  // connection can exceed that before multer has finished receiving it, which
+  // appears in the browser as a generic network error. Keep an explicit,
+  // bounded limit for multipart uploads instead.
+  server.requestTimeout = 60 * 60 * 1000;
+  server.headersTimeout = 65 * 1000;
+  server.keepAliveTimeout = 65 * 1000;
+
   async function shutdown(signal) {
     console.log(`[server] received ${signal}, shutting down gracefully`);
     server.close(async () => {
