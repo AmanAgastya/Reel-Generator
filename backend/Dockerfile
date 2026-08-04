@@ -7,8 +7,12 @@ FROM node:20-bookworm-slim
 # ffmpeg: required by src/services/clipper.js (fluent-ffmpeg shells out to it)
 # python3: required by the yt-dlp binary that youtube-dl-exec installs
 # ca-certificates: needed for HTTPS downloads (YouTube, Groq API)
+# fonts-dejavu-core: clipper.js burns captions in with ffmpeg's drawtext
+#   filter, which needs an actual .ttf on disk - this image has none by
+#   default, so every clip render would fail with a font-not-found error
+#   without it.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg python3 ca-certificates && \
+    apt-get install -y --no-install-recommends ffmpeg python3 ca-certificates fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

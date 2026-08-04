@@ -6,7 +6,7 @@ import Groq from "groq-sdk";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-small";
+const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-large-v3";
 const TRANSCRIPTION_CHUNK_SECONDS = Math.max(10, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 60));
 const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 2));
 const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 2));
@@ -21,7 +21,7 @@ const AUDIO_BITRATE = process.env.AUDIO_BITRATE || "32k";
  */
 export async function transcribeVideo(filePath) {
   const chunkRoot = path.join(path.dirname(filePath), `${uuid()}-chunks`);
-  fs.mkdirSync(chunkRoot, { recursive: true });
+  await fs.promises.mkdir(chunkRoot, { recursive: true });
 
   const duration = await getMediaDuration(filePath);
   const chunks = buildChunkRanges(duration, TRANSCRIPTION_CHUNK_SECONDS);

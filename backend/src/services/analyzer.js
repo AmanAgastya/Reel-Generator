@@ -9,7 +9,7 @@ const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
 const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 3000);
 const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 1);
-const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 1));
+const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 2));
 const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 1200);
 // Transcript chunks are independent LLM calls. Keep chunk sizes very small and
 // concurrency single-threaded on memory-limited hosts.

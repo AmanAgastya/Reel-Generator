@@ -7,7 +7,7 @@ import jobsRouter from "./src/routes/jobs.js";
 
 const app = express();
 
-const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173" || process.env.CLIENT_ORIGIN1).split(",")
+const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173").split(",")
   // Browser Origin headers never end with a slash. Normalize values copied
   // from URLs in hosting dashboards so a trailing slash cannot break CORS.
   .map((origin) => origin.trim().replace(/\/+$/, ""))

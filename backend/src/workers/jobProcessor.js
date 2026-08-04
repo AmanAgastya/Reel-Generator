@@ -4,7 +4,7 @@ import Clip from "../models/Clip.js";
 import { downloadYouTubeVideo } from "../services/downloader.js";
 import { transcribeVideo } from "../services/transcriber.js";
 import { analyzeBestMoments } from "../services/analyzer.js";
-import { renderClip } from "../services/clipper.js";
+import { renderClip, probeVideoDimensions } from "../services/clipper.js";
 import { safeDeleteFile } from "../utils/cleanup.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 
@@ -100,6 +100,11 @@ export async function processJob(jobId) {
     job.progress = 70;
     await job.save();
 
+    // Probe the source video's dimensions once per job instead of once per
+    // clip - every clip render needs it (to fit the full frame into the
+    // vertical canvas without cropping), and it's the same file every time.
+    const sourceDimensions = await probeVideoDimensions(sourceFilePath);
+
     const total = moments.length || 1;
     let done = 0;
     let rendered = 0;
@@ -129,7 +134,7 @@ export async function processJob(jobId) {
       });
 
       try {
-        const filePath = await renderClip(sourceFilePath, moment);
+        const filePath = await renderClip(sourceFilePath, moment, sourceDimensions);
         clipDoc.filePath = filePath;
         clipDoc.status = "rendered";
         await clipDoc.save();
