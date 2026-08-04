@@ -6,10 +6,11 @@ import Groq from "groq-sdk";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-small";
-const TRANSCRIPTION_CHUNK_SECONDS = Math.max(10, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 60));
+const TRANSCRIPTION_CHUNK_SECONDS = Math.max(20, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 60));
+const TRANSCRIPTION_MIN_CHUNK_SECONDS = Math.max(10, Number(process.env.TRANSCRIPTION_MIN_CHUNK_SECONDS || 20));
 const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 1));
 const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 2));
-const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 1200);
+const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 1000);
 const AUDIO_EXTRACTION_THREADS = Math.max(1, Number(process.env.AUDIO_EXTRACTION_THREADS || 1));
 const AUDIO_BITRATE = process.env.AUDIO_BITRATE || "32k";
 
@@ -26,19 +27,8 @@ export async function transcribeVideo(filePath) {
   const chunks = buildChunkRanges(duration, TRANSCRIPTION_CHUNK_SECONDS);
 
   try {
-    const chunkFiles = await mapWithConcurrencySafe(chunks, TRANSCRIPTION_CONCURRENCY, async ({ start, duration }, index) => {
-      const chunkPath = path.join(chunkRoot, `${String(index).padStart(4, "0")}.mp3`);
-      await extractAudioChunk(filePath, chunkPath, start, duration);
-      return { chunkPath, start };
-    });
-
-    const transcripts = await mapWithConcurrencySafe(chunkFiles, TRANSCRIPTION_CONCURRENCY, async ({ chunkPath, start }) => {
-      const response = await retryTranscriptionChunk(chunkPath);
-      return (response?.segments || []).map((segment) => ({
-        start: Number(segment.start || 0) + start,
-        end: Number(segment.end || 0) + start,
-        text: String(segment.text || "").trim(),
-      }));
+    const transcripts = await mapWithConcurrencySafe(chunks, TRANSCRIPTION_CONCURRENCY, async ({ start, duration }, index) => {
+      return await transcribeVideoRange(filePath, chunkRoot, start, duration, index);
     });
 
     const segments = transcripts
@@ -53,6 +43,31 @@ export async function transcribeVideo(filePath) {
     return segments;
   } finally {
     await cleanupDirectory(chunkRoot);
+  }
+}
+
+async function transcribeVideoRange(videoPath, chunkRoot, start, duration, index) {
+  const chunkPath = path.join(chunkRoot, `${String(index).padStart(4, "0")}.mp3`);
+  await extractAudioChunk(videoPath, chunkPath, start, duration);
+  return await transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, chunkPath);
+}
+
+async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, audioPath) {
+  try {
+    const response = await retryTranscriptionChunk(audioPath);
+    return (response?.segments || []).map((segment) => ({
+      start: Number(segment.start || 0) + start,
+      end: Number(segment.end || 0) + start,
+      text: String(segment.text || "").trim(),
+    }));
+  } catch (error) {
+    if (duration > TRANSCRIPTION_MIN_CHUNK_SECONDS && isRecoverableTranscriptionError(error)) {
+      const half = Math.max(TRANSCRIPTION_MIN_CHUNK_SECONDS, Math.floor(duration / 2));
+      const left = await transcribeVideoRange(videoPath, chunkRoot, start, half, `${String(start).padStart(4, "0")}-a`);
+      const right = await transcribeVideoRange(videoPath, chunkRoot, start + half, duration - half, `${String(start + half).padStart(4, "0")}-b`);
+      return [...left, ...right];
+    }
+    throw error;
   }
 }
 
@@ -140,6 +155,17 @@ async function retryTranscriptionChunk(audioPath) {
     }
   }
   throw lastError;
+}
+
+function isRecoverableTranscriptionError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return (
+    message.includes("internal server error") ||
+    message.includes("request entity too large") ||
+    message.includes("rate limit") ||
+    message.includes("timeout") ||
+    message.includes("413")
+  );
 }
 
 async function cleanupDirectory(directory) {
