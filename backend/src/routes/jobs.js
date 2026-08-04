@@ -5,7 +5,7 @@ import { v4 as uuid } from "uuid";
 import Job from "../models/Job.js";
 import Clip from "../models/Clip.js";
 import { upload, uploadChunk } from "../middleware/upload.js";
-import { processJob } from "../workers/jobProcessor.js";
+import { enqueueJob } from "../workers/jobProcessor.js";
 
 const router = express.Router();
 const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
@@ -57,7 +57,7 @@ router.post("/uploads/:uploadId/complete", async (req, res) => {
     }
     const job = await Job.create({ sourceType: "upload", sourceFilePath: outputPath, originalFileName: meta.originalFileName, ownershipConfirmed: true, ownerCreditName: meta.ownerCreditName });
     await fs.rm(dir, { recursive: true, force: true });
-    processJob(job._id).catch((err) => console.error("[job] unhandled error:", err));
+    enqueueJob(job._id);
     res.status(201).json(job);
   } catch (err) {
     res.status(400).json({ error: `Could not complete upload: ${err.message}` });
@@ -90,7 +90,7 @@ router.post("/from-url", async (req, res) => {
       ownerCreditName,
     });
 
-    processJob(job._id).catch((err) => console.error("[job] unhandled error:", err));
+    enqueueJob(job._id);
 
     res.status(201).json(job);
   } catch (err) {
@@ -124,7 +124,7 @@ router.post("/from-upload", upload.single("video"), async (req, res) => {
       ownerCreditName,
     });
 
-    processJob(job._id).catch((err) => console.error("[job] unhandled error:", err));
+    enqueueJob(job._id);
 
     res.status(201).json(job);
   } catch (err) {

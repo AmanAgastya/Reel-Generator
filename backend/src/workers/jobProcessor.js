@@ -6,6 +6,32 @@ import { analyzeBestMoments } from "../services/analyzer.js";
 import { renderClip } from "../services/clipper.js";
 import { safeDeleteFile } from "../utils/cleanup.js";
 
+const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS || 4));
+const queuedJobIds = [];
+const activeJobIds = new Set();
+
+// Keep expensive ffmpeg/transcription work off the request path while allowing
+// multiple independently submitted jobs to progress at the same time.
+export function enqueueJob(jobId) {
+  const id = String(jobId);
+  if (activeJobIds.has(id) || queuedJobIds.includes(id)) return;
+  queuedJobIds.push(id);
+  runQueuedJobs();
+}
+
+function runQueuedJobs() {
+  while (activeJobIds.size < MAX_CONCURRENT_JOBS && queuedJobIds.length) {
+    const jobId = queuedJobIds.shift();
+    activeJobIds.add(jobId);
+    processJob(jobId)
+      .catch((err) => console.error("[job] unhandled error:", err))
+      .finally(() => {
+        activeJobIds.delete(jobId);
+        runQueuedJobs();
+      });
+  }
+}
+
 /**
  * Runs the full pipeline for a single job. Called fire-and-forget from the
  * route handler after the job document is created. In production this

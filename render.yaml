@@ -46,3 +46,5 @@ services:
         value: "60"
       - key: MAX_CLIPS_PER_JOB
         value: "20"
+      - key: MAX_CONCURRENT_JOBS
+        value: "4"
