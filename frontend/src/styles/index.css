@@ -234,6 +234,31 @@ body {
   border-color: #ffb547;
 }
 
+.clip-card.generated-clip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at top left, rgba(255, 181, 71, 0.12), transparent 32%);
+  pointer-events: none;
+}
+
+.clip-card.generated-clip::after {
+  content: "Generated";
+  position: absolute;
+  top: 16px;
+  right: -24px;
+  transform: rotate(45deg);
+  padding: 6px 40px;
+  background: rgba(255, 181, 71, 0.22);
+  color: #ffebc8;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+  opacity: 0.75;
+}
+
 .clip-index {
   font-family: 'IBM Plex Mono', monospace;
   color: #ffde9b;
@@ -251,9 +276,10 @@ body {
 .clip-badge-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 
 .generated-badge {
@@ -300,6 +326,40 @@ body {
   background: #ffb547;
   padding: 4px 8px;
   border-radius: 999px;
+}
+
+.clip-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.status-badge {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.status-badge.rendered {
+  color: #b6f0c5;
+  background: rgba(22, 138, 71, 0.18);
+  border-color: rgba(22, 138, 71, 0.28);
+}
+
+.status-badge.pending {
+  color: #ffebc8;
+  background: rgba(255, 181, 71, 0.18);
+  border-color: rgba(255, 181, 71, 0.28);
+}
+
+.status-badge.failed {
+  color: #ffb6b6;
+  background: rgba(255, 107, 107, 0.18);
+  border-color: rgba(255, 107, 107, 0.28);
 }
 
 .clip-status {
