@@ -6,6 +6,97 @@ const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-70b-versati
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
+const MAX_ANALYSIS_CHARS = 30_000;
+const MAX_CANDIDATE_CLIPS_PER_CHUNK = 3;
+
+function buildTranscriptLines(segments) {
+  return segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);
+}
+
+function chunkTranscript(lines) {
+  const chunks = [];
+  let current = [];
+  let currentLength = 0;
+
+  for (const line of lines) {
+    const lineLength = line.length + 1;
+    if (currentLength + lineLength > MAX_ANALYSIS_CHARS && current.length) {
+      chunks.push(current.join("\n"));
+      current = [line];
+      currentLength = lineLength;
+    } else {
+      current.push(line);
+      currentLength += lineLength;
+    }
+  }
+
+  if (current.length) {
+    chunks.push(current.join("\n"));
+  }
+
+  return chunks;
+}
+
+async function analyzeTranscriptChunk(transcriptText, chunkIndex, maxClips) {
+  const chunkPrompt = `You are an expert short-form video editor. You are given a
+timestamped transcript chunk from a longer video. Identify the strongest,
+self-contained moments that would work as standalone short clips (${MIN_CLIP_SECONDS}-${MAX_CLIP_SECONDS} seconds each).
+
+Rules:
+- Pick up to ${maxClips} moments, ranked best first. Return at least one if the transcript chunk contains a suitable moment.
+- Each moment must make sense on its own without earlier context.
+- start/end must be real timestamps drawn from the transcript, snapped to natural sentence boundaries.
+- Write a short, punchy caption (under 100 characters) for each clip.
+- Suggest 3-5 relevant hashtags per clip (no # symbol, just the words).
+- Do not fabricate timestamps or text that isn't supported by the transcript.
+
+Respond ONLY with JSON, no prose, in this exact shape:
+{
+  "clips": [
+    { "start": 12.4, "end": 45.1, "caption": "...", "hashtags": ["...","..."], "rankScore": 0.95 }
+  ]
+}`;
+
+  const completion = await groq.chat.completions.create({
+    model: ANALYSIS_MODEL,
+    messages: [
+      { role: "system", content: chunkPrompt },
+      { role: "user", content: transcriptText },
+    ],
+    response_format: { type: "json_object" },
+    temperature: 0.3,
+  });
+
+  const parsed = JSON.parse(completion.choices[0].message.content);
+  return (Array.isArray(parsed.clips) ? parsed.clips : []).map((clip) => ({
+    start: Number(clip.start),
+    end: Number(clip.end),
+    caption: String(clip.caption || "").trim(),
+    hashtags: Array.isArray(clip.hashtags)
+      ? clip.hashtags.map((hashtag) => String(hashtag).replace(/^#/, "").trim()).filter(Boolean)
+      : [],
+    rankScore: Number(clip.rankScore),
+  }));
+}
+
+function normalizeClips(clips, ownerCreditName) {
+  return clips
+    .filter(
+      (clip) =>
+        Number.isFinite(clip.start) &&
+        Number.isFinite(clip.end) &&
+        clip.end > clip.start &&
+        clip.end - clip.start >= MIN_CLIP_SECONDS - 2
+    )
+    .slice(0, MAX_CLIPS_PER_JOB)
+    .map((clip) => ({
+      ...clip,
+      caption: clip.caption || "Key moment from this video",
+      hashtags: Array.isArray(clip.hashtags) ? clip.hashtags : [],
+      rankScore: Number.isFinite(clip.rankScore) ? clip.rankScore : 0.5,
+      creditLine: `Original video by ${ownerCreditName}`,
+    }));
+}
 
 /**
  * Given a timestamped transcript, asks an LLM to identify the strongest
@@ -42,72 +133,27 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
     MAX_CLIPS_PER_JOB,
     Math.max(1, Math.floor(videoDuration / MIN_CLIP_SECONDS))
   );
-  const transcriptText = segments
-    .map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`)
-    .join("\n");
 
-  const systemPrompt = `You are an expert short-form video editor. You are given a
-timestamped transcript of a single long-form video. Identify the strongest,
-self-contained moments that would work as standalone short clips (${MIN_CLIP_SECONDS}-${MAX_CLIP_SECONDS} seconds each).
+  const transcriptLines = buildTranscriptLines(segments);
+  const transcriptChunks = chunkTranscript(transcriptLines);
 
-Rules:
-- Pick up to ${requestedClipCount} moments, ranked best first. Return at least
-  one if the transcript contains a suitable moment.
-- Each moment must make sense on its own without earlier context.
-- start/end must be real timestamps drawn from the transcript, snapped to
-  natural sentence boundaries.
-- Write a short, punchy caption (under 100 characters) for each clip.
-- Suggest 3-5 relevant hashtags per clip (no # symbol, just the words).
-- Do not fabricate timestamps or text that isn't supported by the transcript.
+  const candidateClips = [];
+  for (const chunkText of transcriptChunks) {
+    try {
+      const chunkClips = await analyzeTranscriptChunk(chunkText, candidateClips.length, MAX_CANDIDATE_CLIPS_PER_CHUNK);
+      candidateClips.push(...chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK));
+    } catch (error) {
+      console.error("[analyzer] chunk analysis failed:", error);
+    }
+  }
 
-Respond ONLY with JSON, no prose, in this exact shape:
-{
-  "clips": [
-    { "start": 12.4, "end": 45.1, "caption": "...", "hashtags": ["...","..."], "rankScore": 0.95 }
-  ]
-}`;
+  const rankedClips = normalizeClips(
+    candidateClips.sort((a, b) => b.rankScore - a.rankScore).slice(0, requestedClipCount),
+    ownerCreditName
+  );
 
-  const completion = await groq.chat.completions.create({
-    model: ANALYSIS_MODEL,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: transcriptText },
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0.4,
-  });
+  if (rankedClips.length) return rankedClips;
 
-  const parsed = JSON.parse(completion.choices[0].message.content);
-  const clips = (Array.isArray(parsed.clips) ? parsed.clips : [])
-    .map((clip) => ({
-      start: Number(clip.start),
-      end: Number(clip.end),
-      caption: String(clip.caption || "").trim(),
-      hashtags: Array.isArray(clip.hashtags)
-        ? clip.hashtags.map((hashtag) => String(hashtag).replace(/^#/, "").trim()).filter(Boolean)
-        : [],
-      rankScore: Number(clip.rankScore),
-    }))
-    .filter(
-      (clip) =>
-        Number.isFinite(clip.start) &&
-        Number.isFinite(clip.end) &&
-        clip.end > clip.start &&
-        clip.end - clip.start >= MIN_CLIP_SECONDS - 2
-    )
-    .slice(0, MAX_CLIPS_PER_JOB)
-    .map((clip) => ({
-      ...clip,
-      caption: clip.caption || "Key moment from this video",
-      rankScore: Number.isFinite(clip.rankScore) ? clip.rankScore : 0.5,
-      creditLine: `Original video by ${ownerCreditName}`,
-    }));
-
-  if (clips.length) return clips;
-
-  // Models occasionally return an empty list for a valid short transcript.
-  // Keep the pipeline useful by cutting one bounded, timestamped moment rather
-  // than marking the job completed with no clips.
   return [
     {
       start: videoStart,
