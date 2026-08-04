@@ -4,7 +4,9 @@ import fs from "fs";
 
 const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
 const uploadDir = path.join(STORAGE_DIR, "uploads");
+const chunkDir = path.join(uploadDir, ".chunks");
 fs.mkdirSync(uploadDir, { recursive: true });
+fs.mkdirSync(chunkDir, { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -21,4 +23,11 @@ export const upload = multer({
     const ok = /mp4|mov|mkv|webm/i.test(file.mimetype) || /\.(mp4|mov|mkv|webm)$/i.test(file.originalname);
     cb(ok ? null : new Error("Unsupported video format"), ok);
   },
+});
+
+// Keep each browser request safely below common proxy upload limits. Chunks
+// are assembled by the route only after every part has arrived.
+export const uploadChunk = multer({
+  dest: chunkDir,
+  limits: { fileSize: 20 * 1024 * 1024 },
 });

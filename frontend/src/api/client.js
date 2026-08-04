@@ -46,24 +46,17 @@ export async function createJobFromUrl({ url, ownershipConfirmed, ownerCreditNam
 }
 
 export async function createJobFromUpload({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
-  const form = new FormData();
-  form.append("video", file);
-  form.append("ownershipConfirmed", ownershipConfirmed);
-  form.append("ownerCreditName", ownerCreditName);
-  const { data } = await client.post("/jobs/from-upload", form, {
-    // Do not set Content-Type manually: the browser supplies the multipart
-    // boundary that multer needs to parse a large file upload.
-    onUploadProgress: (event) => {
-      const progress =
-        typeof event.progress === "number"
-          ? event.progress
-          : event.total
-          ? event.loaded / event.total
-          : null;
-      if (progress === null) return;
-      onProgress?.(Math.min(100, Math.round(progress * 100)));
-    },
-  });
+  const { data: session } = await client.post("/jobs/uploads/init", { ownershipConfirmed, ownerCreditName, originalFileName: file.name });
+  const chunkSize = 20 * 1024 * 1024;
+  const totalChunks = Math.ceil(file.size / chunkSize);
+  for (let index = 0; index < totalChunks; index += 1) {
+    const form = new FormData();
+    form.append("chunk", file.slice(index * chunkSize, Math.min((index + 1) * chunkSize, file.size)), "chunk.part");
+    form.append("index", String(index));
+    await client.post(`/jobs/uploads/${session.uploadId}/chunks`, form);
+    onProgress?.(Math.round(((index + 1) / totalChunks) * 100));
+  }
+  const { data } = await client.post(`/jobs/uploads/${session.uploadId}/complete`, { totalChunks });
   return data;
 }
 
