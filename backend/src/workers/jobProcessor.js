@@ -53,6 +53,9 @@ export async function processJob(jobId) {
     const moments = await analyzeBestMoments(transcript, {
       ownerCreditName: job.ownerCreditName,
     });
+    if (!moments.length) {
+      throw new Error("No usable moments were found in the video transcript.");
+    }
 
     // 4. Render each clip
     job.status = "clipping";
@@ -61,6 +64,8 @@ export async function processJob(jobId) {
 
     const total = moments.length || 1;
     let done = 0;
+    let rendered = 0;
+    const renderErrors = [];
 
     for (const moment of moments) {
       const clipDoc = await Clip.create({
@@ -79,14 +84,21 @@ export async function processJob(jobId) {
         clipDoc.filePath = filePath;
         clipDoc.status = "rendered";
         await clipDoc.save();
+        rendered += 1;
       } catch (err) {
         clipDoc.status = "failed";
         await clipDoc.save();
+        renderErrors.push(err.message);
+        console.error(`[job] clip render failed: ${err.message}`);
       }
 
       done += 1;
       job.progress = 70 + Math.round((done / total) * 30);
       await job.save();
+    }
+
+    if (!rendered) {
+      throw new Error(`Could not render any clips. ${renderErrors[0] || "Check the server logs for ffmpeg errors."}`);
     }
 
     // Clips are cut — the full source video is no longer needed. Remove it
