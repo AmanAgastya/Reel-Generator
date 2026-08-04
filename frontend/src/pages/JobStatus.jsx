@@ -9,18 +9,32 @@ export default function JobStatus() {
   const { jobId } = useParams();
   const [job, setJob] = useState(null);
   const [clips, setClips] = useState([]);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     let active = true;
     let interval;
+    let failureCount = 0;
 
     async function poll() {
-      const data = await getJob(jobId);
-      if (!active) return;
-      setJob(data.job);
-      setClips(data.clips);
-      if (["completed", "failed"].includes(data.job.status)) {
-        clearInterval(interval);
+      try {
+        const data = await getJob(jobId);
+        if (!active) return;
+        setJob(data.job);
+        setClips(data.clips);
+        setError("");
+        failureCount = 0;
+        if (["completed", "failed"].includes(data.job.status)) {
+          clearInterval(interval);
+        }
+      } catch (err) {
+        console.error("[JobStatus] poll failed:", err);
+        if (!active) return;
+        failureCount += 1;
+        setError(err.response?.data?.error || err.message || "Failed to load job status.");
+        if (failureCount >= 5) {
+          clearInterval(interval);
+        }
       }
     }
 
@@ -32,7 +46,12 @@ export default function JobStatus() {
     };
   }, [jobId]);
 
-  if (!job) return <div className="page">Loading…</div>;
+  if (!job)
+    return (
+      <div className="page">
+        {error ? <p className="error">{error}</p> : "Loading…"}
+      </div>
+    );
 
   const stageIndex = STAGES.indexOf(job.status);
 
@@ -52,6 +71,8 @@ export default function JobStatus() {
             : "Finding the best moments…"}
         </h1>
       </header>
+
+      {error && <p className="error">{error}</p>}
 
       {job.status === "failed" ? (
         <p className="error">{job.error}</p>

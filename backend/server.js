@@ -46,6 +46,24 @@ app.use("/api/jobs", jobsRouter);
 app.use((err, req, res, next) => {
   console.error(err);
 
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  if (err.name === "CastError") {
+    return res.status(400).json({ error: "Invalid identifier provided." });
+  }
+
+  if (err.name === "SyntaxError" && err.status === 400 && "body" in err) {
+    return res.status(400).json({ error: "Malformed request body." });
+  }
+
+  if (err.name === "MongooseServerSelectionError" || err.name === "MongoNetworkError" || err.name === "MongooseNetworkError") {
+    return res.status(503).json({
+      error: "Database unavailable. Please try again in a moment.",
+    });
+  }
+
   if (err.code?.startsWith("LIMIT_")) {
     const message = err.code === "LIMIT_FILE_SIZE"
       ? "Video file is too large. Maximum upload size is 1GB."
