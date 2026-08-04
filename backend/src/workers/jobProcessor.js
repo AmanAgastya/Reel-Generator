@@ -1,3 +1,4 @@
+import os from "os";
 import Job from "../models/Job.js";
 import Clip from "../models/Clip.js";
 import { downloadYouTubeVideo } from "../services/downloader.js";
@@ -5,8 +6,17 @@ import { transcribeVideo } from "../services/transcriber.js";
 import { analyzeBestMoments } from "../services/analyzer.js";
 import { renderClip } from "../services/clipper.js";
 import { safeDeleteFile } from "../utils/cleanup.js";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS || 4));
+// Each clip render is an independent ffmpeg encode of a short (15-60s)
+// segment — rendering them one-at-a-time was the single biggest source of
+// wall-clock time for jobs with many clips. Default to CPU core count
+// (capped) since libx264 encodes are CPU-bound.
+const CLIP_RENDER_CONCURRENCY = Math.max(
+  1,
+  Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(4, os.cpus().length))
+);
 const queuedJobIds = [];
 const activeJobIds = new Set();
 
@@ -93,7 +103,18 @@ export async function processJob(jobId) {
     let rendered = 0;
     const renderErrors = [];
 
-    for (const moment of moments) {
+    // Serialize DB writes for progress even though renders run in parallel,
+    // so concurrent `job.save()` calls on the same in-memory doc don't race.
+    let saveChain = Promise.resolve();
+    const queueProgressSave = () => {
+      saveChain = saveChain.then(() => job.save()).catch((e) => console.error("[job] progress save failed:", e));
+      return saveChain;
+    };
+
+    // Clips are rendered CLIP_RENDER_CONCURRENCY at a time instead of one at
+    // a time (was: sequential await in a for loop — the dominant cost for
+    // jobs with many clips, since each render is an independent ffmpeg run).
+    await mapWithConcurrency(moments, CLIP_RENDER_CONCURRENCY, async (moment) => {
       const clipDoc = await Clip.create({
         job: job._id,
         startSeconds: moment.start,
@@ -120,8 +141,10 @@ export async function processJob(jobId) {
 
       done += 1;
       job.progress = 70 + Math.round((done / total) * 30);
-      await job.save();
-    }
+      queueProgressSave();
+    });
+
+    await saveChain;
 
     if (!rendered) {
       throw new Error(`Could not render any clips. ${renderErrors[0] || "Check the server logs for ffmpeg errors."}`);

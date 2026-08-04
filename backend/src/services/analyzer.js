@@ -1,4 +1,5 @@
 import Groq from "groq-sdk";
+import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-70b-versatile";
@@ -8,6 +9,10 @@ const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
 const MAX_ANALYSIS_CHARS = 30_000;
 const MAX_CANDIDATE_CLIPS_PER_CHUNK = 3;
+// Transcript chunks are independent LLM calls — run several at once instead
+// of awaiting them one-by-one. Kept modest to stay comfortably under Groq's
+// per-account rate limits even on long videos with many chunks.
+const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 4));
 
 function buildTranscriptLines(segments) {
   return segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);
@@ -137,15 +142,22 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
   const transcriptLines = buildTranscriptLines(segments);
   const transcriptChunks = chunkTranscript(transcriptLines);
 
-  const candidateClips = [];
-  for (const chunkText of transcriptChunks) {
-    try {
-      const chunkClips = await analyzeTranscriptChunk(chunkText, candidateClips.length, MAX_CANDIDATE_CLIPS_PER_CHUNK);
-      candidateClips.push(...chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK));
-    } catch (error) {
-      console.error("[analyzer] chunk analysis failed:", error);
+  // Chunks are analyzed concurrently (was: sequential await in a for loop,
+  // which meant a 4-chunk transcript took 4x as long as it needed to).
+  const chunkResults = await mapWithConcurrency(
+    transcriptChunks,
+    ANALYSIS_CONCURRENCY,
+    async (chunkText, chunkIndex) => {
+      try {
+        const chunkClips = await analyzeTranscriptChunk(chunkText, chunkIndex, MAX_CANDIDATE_CLIPS_PER_CHUNK);
+        return chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK);
+      } catch (error) {
+        console.error("[analyzer] chunk analysis failed:", error);
+        return [];
+      }
     }
-  }
+  );
+  const candidateClips = chunkResults.flat();
 
   const rankedClips = normalizeClips(
     candidateClips.sort((a, b) => b.rankScore - a.rankScore).slice(0, requestedClipCount),

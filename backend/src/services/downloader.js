@@ -28,11 +28,17 @@ export async function downloadYouTubeVideo(url) {
   try {
     await youtubedl(url, {
       output: outputTemplate,
-      format: "mp4[height<=1080]/best",
+      format: "mp4[height<=1080]/best[height<=1080]/best",
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
       noPlaylist: true,
+      // Fetch multiple fragments of the video in parallel instead of one
+      // stream at a time — the single biggest download-speed lever yt-dlp
+      // exposes, especially on DASH/HLS-served formats.
+      concurrentFragments: Math.max(1, Number(process.env.YTDLP_CONCURRENT_FRAGMENTS || 8)),
+      retries: 5,
+      fragmentRetries: 5,
       ...(cookiesFile ? { cookies: cookiesFile } : {}),
     });
   } catch (err) {
