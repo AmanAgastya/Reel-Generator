@@ -2,6 +2,8 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createJobFromUrl, createJobFromUpload } from "../api/client.js";
 
+const MAX_UPLOAD_BYTES = 1 * 1024 * 1024 * 1024; // 1GB
+
 export default function Home() {
   const navigate = useNavigate();
   const [mode, setMode] = useState("url"); // 'url' | 'upload'
@@ -91,7 +93,20 @@ export default function Home() {
         ) : (
           <label className="field">
             <span>Video file</span>
-            <input type="file" accept="video/*" onChange={(e) => setFile(e.target.files[0])} />
+            <input
+              type="file"
+              accept="video/*"
+              onChange={(e) => {
+                const selectedFile = e.target.files[0];
+                if (selectedFile && selectedFile.size > MAX_UPLOAD_BYTES) {
+                  setError("File is too large. Pick a video smaller than 1GB.");
+                  setFile(null);
+                } else {
+                  setError("");
+                  setFile(selectedFile);
+                }
+              }}
+            />
           </label>
         )}
 

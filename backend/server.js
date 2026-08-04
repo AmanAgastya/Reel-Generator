@@ -45,6 +45,17 @@ app.use("/api/jobs", jobsRouter);
 
 app.use((err, req, res, next) => {
   console.error(err);
+
+  if (err.code === "LIMIT_FILE_SIZE") {
+    return res.status(413).json({
+      error: "Video file is too large. Maximum upload size is 1GB.",
+    });
+  }
+
+  if (err.message?.includes("unexpected field")) {
+    return res.status(400).json({ error: "Invalid upload field." });
+  }
+
   res.status(500).json({ error: err.message || "Internal server error" });
 });
 

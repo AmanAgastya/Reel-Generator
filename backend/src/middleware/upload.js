@@ -8,6 +8,7 @@ const chunkDir = path.join(uploadDir, ".chunks");
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(chunkDir, { recursive: true });
 
+const MAX_UPLOAD_FILE_SIZE = 1 * 1024 * 1024 * 1024; // 1GB
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
@@ -18,7 +19,7 @@ const storage = multer.diskStorage({
 
 export const upload = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB
+  limits: { fileSize: MAX_UPLOAD_FILE_SIZE },
   fileFilter: (req, file, cb) => {
     const ok = /mp4|mov|mkv|webm/i.test(file.mimetype) || /\.(mp4|mov|mkv|webm)$/i.test(file.originalname);
     cb(ok ? null : new Error("Unsupported video format"), ok);
