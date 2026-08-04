@@ -45,13 +45,17 @@ export async function createJobFromUrl({ url, ownershipConfirmed, ownerCreditNam
   return data;
 }
 
-export async function createJobFromUpload({ file, ownershipConfirmed, ownerCreditName }) {
+export async function createJobFromUpload({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
   const form = new FormData();
   form.append("video", file);
   form.append("ownershipConfirmed", ownershipConfirmed);
   form.append("ownerCreditName", ownerCreditName);
   const { data } = await client.post("/jobs/from-upload", form, {
     headers: { "Content-Type": "multipart/form-data" },
+    onUploadProgress: (event) => {
+      if (!event.total) return;
+      onProgress?.(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    },
   });
   return data;
 }

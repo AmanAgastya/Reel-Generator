@@ -10,6 +10,7 @@ export default function Home() {
   const [ownerCreditName, setOwnerCreditName] = useState("");
   const [ownershipConfirmed, setOwnershipConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
   const [error, setError] = useState("");
 
   const canSubmit =
@@ -21,17 +22,24 @@ export default function Home() {
     e.preventDefault();
     if (!canSubmit) return;
     setSubmitting(true);
+    setUploadProgress(mode === "upload" ? 0 : null);
     setError("");
     try {
       const job =
         mode === "url"
           ? await createJobFromUrl({ url, ownershipConfirmed, ownerCreditName })
-          : await createJobFromUpload({ file, ownershipConfirmed, ownerCreditName });
+          : await createJobFromUpload({
+              file,
+              ownershipConfirmed,
+              ownerCreditName,
+              onProgress: setUploadProgress,
+            });
       navigate(`/jobs/${job._id}`);
     } catch (err) {
       setError(err.response?.data?.error || err.message);
     } finally {
       setSubmitting(false);
+      setUploadProgress(null);
     }
   }
 
@@ -105,6 +113,19 @@ export default function Home() {
         </label>
 
         {error && <p className="error">{error}</p>}
+
+        {submitting && mode === "upload" && uploadProgress !== null && (
+          <div className="upload-progress" aria-live="polite">
+            <div className="upload-progress-label">
+              <span>{uploadProgress < 100 ? "Uploading video" : "Starting analysis"}</span>
+              <span>{uploadProgress}%</span>
+            </div>
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${uploadProgress}%` }} />
+            </div>
+            <p>Large videos can take a few minutes to transfer before analysis begins.</p>
+          </div>
+        )}
 
         <button className="submit" type="submit" disabled={!canSubmit || submitting}>
           {submitting ? "Starting…" : "Find the best moments"}

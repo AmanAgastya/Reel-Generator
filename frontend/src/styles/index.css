@@ -132,6 +132,25 @@ body {
 
 .error { color: var(--danger); font-size: 14px; margin: 0 0 14px; }
 
+.upload-progress { margin: 0 0 18px; }
+
+.upload-progress-label {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+
+.upload-progress .progress-bar { margin-top: 8px; }
+
+.upload-progress p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 8px 0 0;
+}
+
 .back {
   color: var(--muted);
   text-decoration: none;
