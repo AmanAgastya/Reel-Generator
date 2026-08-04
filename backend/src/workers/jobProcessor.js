@@ -10,10 +10,11 @@ import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS || 1));
 // Each clip render is an independent ffmpeg encode of a short (15-60s)
-// segment. Use a low default concurrency on memory-limited instances.
+// segment. Use a modest parallelism default for faster runtime while
+// allowing environments with only one CPU to stay safe.
 const CLIP_RENDER_CONCURRENCY = Math.max(
   1,
-  Number(process.env.CLIP_RENDER_CONCURRENCY || 1)
+  Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(2, os.cpus().length))
 );
 const queuedJobIds = [];
 const activeJobIds = new Set();
@@ -77,7 +78,10 @@ export async function processJob(jobId) {
     job.progress = 35;
     await job.save();
     const transcript = await transcribeVideo(sourceFilePath);
-    job.transcript = transcript;
+    job.videoDurationSeconds = Math.max(
+      0,
+      (transcript[transcript.length - 1]?.end || 0) - (transcript[0]?.start || 0)
+    );
     await job.save();
 
     // 3. Analyze for best moments

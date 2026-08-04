@@ -9,6 +9,8 @@ const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
 const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 3000);
 const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 1);
+const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 1));
+const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 1200);
 // Transcript chunks are independent LLM calls. Keep chunk sizes very small and
 // concurrency single-threaded on memory-limited hosts.
 const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 1));
@@ -62,17 +64,19 @@ Respond ONLY with JSON, no prose, in this exact shape:
 }`;
 
   try {
-    const completion = await groq.chat.completions.create({
-      model: ANALYSIS_MODEL,
-      messages: [
-        { role: "system", content: chunkPrompt },
-        { role: "user", content: transcriptText },
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.3,
-    });
+    const completion = await retryAnalysisRequest(() =>
+      groq.chat.completions.create({
+        model: ANALYSIS_MODEL,
+        messages: [
+          { role: "system", content: chunkPrompt },
+          { role: "user", content: transcriptText },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.3,
+      })
+    );
 
-    const parsed = JSON.parse(completion.choices[0].message.content);
+    const parsed = JSON.parse(completion.choices[0].message.content || "{}");
     return (Array.isArray(parsed.clips) ? parsed.clips : []).map((clip) => ({
       start: Number(clip.start),
       end: Number(clip.end),
@@ -100,6 +104,21 @@ Respond ONLY with JSON, no prose, in this exact shape:
 
     throw error;
   }
+}
+
+async function retryAnalysisRequest(fn) {
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_ANALYSIS_RETRIES; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt === MAX_ANALYSIS_RETRIES) break;
+      console.warn(`[analyzer] analysis attempt ${attempt} failed: ${error.message}. Retrying...`);
+      await new Promise((resolve) => setTimeout(resolve, ANALYSIS_RETRY_DELAY_MS));
+    }
+  }
+  throw lastError;
 }
 
 function normalizeClips(clips, ownerCreditName) {
