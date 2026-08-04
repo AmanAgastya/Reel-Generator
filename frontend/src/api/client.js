@@ -46,18 +46,39 @@ export async function createJobFromUrl({ url, ownershipConfirmed, ownerCreditNam
 }
 
 export async function createJobFromUpload({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
-  const { data: session } = await client.post("/jobs/uploads/init", { ownershipConfirmed, ownerCreditName, originalFileName: file.name });
+  const { data: session } = await retryNetworkRequest(() =>
+    client.post("/jobs/uploads/init", { ownershipConfirmed, ownerCreditName, originalFileName: file.name })
+  );
   const chunkSize = 20 * 1024 * 1024;
   const totalChunks = Math.ceil(file.size / chunkSize);
   for (let index = 0; index < totalChunks; index += 1) {
     const form = new FormData();
     form.append("chunk", file.slice(index * chunkSize, Math.min((index + 1) * chunkSize, file.size)), "chunk.part");
     form.append("index", String(index));
-    await client.post(`/jobs/uploads/${session.uploadId}/chunks`, form);
+    await retryNetworkRequest(() => client.post(`/jobs/uploads/${session.uploadId}/chunks`, form));
     onProgress?.(Math.round(((index + 1) / totalChunks) * 100));
   }
-  const { data } = await client.post(`/jobs/uploads/${session.uploadId}/complete`, { totalChunks });
+  const { data } = await retryNetworkRequest(() =>
+    client.post(`/jobs/uploads/${session.uploadId}/complete`, { totalChunks })
+  );
   return data;
+}
+
+async function retryNetworkRequest(request, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await request();
+    } catch (error) {
+      lastError = error;
+      if (error.code !== "ERR_NETWORK" || attempt === attempts) break;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+    }
+  }
+  if (lastError?.code === "ERR_NETWORK") {
+    lastError.message = "Upload connection was interrupted after three retries. Check your internet connection and try again.";
+  }
+  throw lastError;
 }
 
 export async function getJob(jobId) {
