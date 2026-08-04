@@ -49,7 +49,7 @@ export async function createJobFromUpload({ file, ownershipConfirmed, ownerCredi
   const { data: session } = await retryNetworkRequest(() =>
     client.post("/jobs/uploads/init", { ownershipConfirmed, ownerCreditName, originalFileName: file.name })
   );
-  const chunkSize = 20 * 1024 * 1024;
+  const chunkSize = 5 * 1024 * 1024;
   const totalChunks = Math.ceil(file.size / chunkSize);
   for (let index = 0; index < totalChunks; index += 1) {
     const form = new FormData();

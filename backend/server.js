@@ -46,10 +46,11 @@ app.use("/api/jobs", jobsRouter);
 app.use((err, req, res, next) => {
   console.error(err);
 
-  if (err.code === "LIMIT_FILE_SIZE") {
-    return res.status(413).json({
-      error: "Video file is too large. Maximum upload size is 1GB.",
-    });
+  if (err.code?.startsWith("LIMIT_")) {
+    const message = err.code === "LIMIT_FILE_SIZE"
+      ? "Video file is too large. Maximum upload size is 1GB."
+      : err.message || "Upload limit exceeded.";
+    return res.status(413).json({ error: message });
   }
 
   if (err.message?.includes("unexpected field")) {
@@ -69,7 +70,7 @@ connectDB().then(() => {
   // appears in the browser as a generic network error. Keep an explicit,
   // bounded limit for multipart uploads instead.
   server.requestTimeout = 60 * 60 * 1000;
-  server.headersTimeout = 65 * 1000;
+  server.headersTimeout = 5 * 60 * 1000;
   server.keepAliveTimeout = 65 * 1000;
 
   async function shutdown(signal) {

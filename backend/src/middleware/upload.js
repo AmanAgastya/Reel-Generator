@@ -30,5 +30,5 @@ export const upload = multer({
 // are assembled by the route only after every part has arrived.
 export const uploadChunk = multer({
   dest: chunkDir,
-  limits: { fileSize: 20 * 1024 * 1024 },
+  limits: { fileSize: 8 * 1024 * 1024 },
 });
