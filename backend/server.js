@@ -9,7 +9,9 @@ const app = express();
 
 const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
   .split(",")
-  .map((origin) => origin.trim())
+  // Browser Origin headers never end with a slash. Normalize values copied
+  // from URLs in hosting dashboards so a trailing slash cannot break CORS.
+  .map((origin) => origin.trim().replace(/\/+$/, ""))
   .filter(Boolean);
 
 function isAllowedOrigin(origin) {
