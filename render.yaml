@@ -38,6 +38,8 @@ services:
         value: whisper-large-v3
       - key: GROQ_ANALYSIS_MODEL
         value: llama-3.3-70b-versatile
+      - key: YTDLP_COOKIES_FILE
+        sync: false # optional path to a securely mounted yt-dlp cookies.txt
       - key: MIN_CLIP_SECONDS
         value: "15"
       - key: MAX_CLIP_SECONDS

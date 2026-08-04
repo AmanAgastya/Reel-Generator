@@ -152,6 +152,7 @@ project's README already flags under "Notes / next steps."
 | Symptom | Likely cause |
 |---|---|
 | Frontend shows network errors calling the API | `VITE_API_URL` missing/wrong on Vercel, or `CLIENT_ORIGIN` on Render doesn't exactly match your Vercel URL (no trailing slash) |
+| Jobs fail with “Sign in to confirm you’re not a bot” | YouTube blocked Render’s server IP. For videos you own, upload the source file (most reliable), or securely mount a Netscape-format `cookies.txt` file and set `YTDLP_COOKIES_FILE` to its absolute path. Never commit cookies to the repository. |
 | Jobs stuck at `downloading` | `youtube-dl-exec`/YouTube blocking the Render IP, or the source URL isn't actually downloadable — check Render logs |
 | ffmpeg errors in logs | You deployed without Docker environment (native Render Node runtime has no ffmpeg) — confirm the service's Environment is set to Docker |
 | Clips disappear after a while | No persistent Disk attached, or app was redeployed — see the ephemeral storage note above |
