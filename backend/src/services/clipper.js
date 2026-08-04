@@ -4,6 +4,9 @@ import fs from "fs";
 import { v4 as uuid } from "uuid";
 
 const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
+const CLIP_VIDEO_PRESET = process.env.CLIP_VIDEO_PRESET || "superfast";
+const CLIP_VIDEO_CRf = Number(process.env.CLIP_VIDEO_CRF || 23);
+const CLIP_AUDIO_BITRATE = process.env.CLIP_AUDIO_BITRATE || "128k";
 
 /**
  * Cuts a single clip from the source video and burns in the caption +
@@ -32,7 +35,15 @@ export function renderClip(sourceFilePath, { start, end, caption, creditLine }) 
       .setStartTime(start)
       .setDuration(duration)
       .videoFilters(filter)
-      .outputOptions(["-c:v libx264", "-c:a aac", "-preset veryfast", "-crf 20"])
+      .outputOptions([
+        "-c:v libx264",
+        `-preset ${CLIP_VIDEO_PRESET}`,
+        `-crf ${CLIP_VIDEO_CRf}`,
+        "-c:a aac",
+        `-b:a ${CLIP_AUDIO_BITRATE}`,
+        "-movflags +faststart",
+        "-threads 0",
+      ])
       .save(outputPath)
       .on("end", () => resolve(outputPath))
       .on("error", (err) => reject(err));

@@ -131,6 +131,12 @@ router.get("/:id", asyncHandler(async (req, res) => {
     const job = await Job.findById(req.params.id);
     if (!job) return res.status(404).json({ error: "job not found" });
     const clips = await Clip.find({ job: job._id }).sort({ rankScore: -1 });
+    const statusOrder = { rendered: 0, pending: 1, failed: 2 };
+    clips.sort((a, b) => {
+      const statusComparison = statusOrder[a.status] - statusOrder[b.status];
+      if (statusComparison !== 0) return statusComparison;
+      return (b.rankScore || 0) - (a.rankScore || 0);
+    });
     res.json({ job, clips });
   } catch (err) {
     console.error("[jobs] get job failed:", err);

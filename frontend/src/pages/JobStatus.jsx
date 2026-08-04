@@ -54,6 +54,8 @@ export default function JobStatus() {
     );
 
   const stageIndex = STAGES.indexOf(job.status);
+  const renderedCount = clips.filter((clip) => clip.status === "rendered").length;
+  const totalClips = clips.length;
 
   return (
     <div className="page">
@@ -76,18 +78,26 @@ export default function JobStatus() {
 
       {job.status === "failed" ? (
         <p className="error">{job.error}</p>
-      ) : job.status !== "completed" ? (
-        <div className="progress-track">
-          {STAGES.slice(0, -1).map((stage, i) => (
-            <div key={stage} className={`stage ${i <= stageIndex ? "done" : ""}`}>
-              {stage}
+      ) : (
+        <>
+          {job.status !== "completed" && (
+            <div className="progress-track">
+              {STAGES.slice(0, -1).map((stage, i) => (
+                <div key={stage} className={`stage ${i <= stageIndex ? "done" : ""}`}>
+                  {stage}
+                </div>
+              ))}
+              <div className="progress-bar">
+                <div className="progress-fill" style={{ width: `${job.progress}%` }} />
+              </div>
             </div>
-          ))}
-          <div className="progress-bar">
-            <div className="progress-fill" style={{ width: `${job.progress}%` }} />
-          </div>
-        </div>
-      ) : null}
+          )}
+
+          {job.status === "clipping" && totalClips > 0 && (
+            <p className="sub">Rendering clips in the background — {renderedCount}/{totalClips} ready so far.</p>
+          )}
+        </>
+      )}
 
       {clips.length > 0 && (
         <div className="clip-grid">

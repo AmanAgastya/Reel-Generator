@@ -11,11 +11,11 @@ import { mapWithConcurrency } from "../utils/concurrency.js";
 const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS || 4));
 // Each clip render is an independent ffmpeg encode of a short (15-60s)
 // segment — rendering them one-at-a-time was the single biggest source of
-// wall-clock time for jobs with many clips. Default to CPU core count
-// (capped) since libx264 encodes are CPU-bound.
+// wall-clock time for jobs with many clips. Default to a higher parallelism
+// on multi-core machines, but allow environment override.
 const CLIP_RENDER_CONCURRENCY = Math.max(
   1,
-  Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(4, os.cpus().length))
+  Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(8, os.cpus().length))
 );
 const queuedJobIds = [];
 const activeJobIds = new Set();
