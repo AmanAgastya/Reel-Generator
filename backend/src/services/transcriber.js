@@ -3,12 +3,11 @@ import path from "path";
 import { v4 as uuid } from "uuid";
 import ffmpeg from "fluent-ffmpeg";
 import Groq from "groq-sdk";
-import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-large-v3";
+const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-small";
 const TRANSCRIPTION_CHUNK_SECONDS = Math.max(10, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 60));
-const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 2));
+const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 1));
 const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 2));
 const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 1200);
 const AUDIO_EXTRACTION_THREADS = Math.max(1, Number(process.env.AUDIO_EXTRACTION_THREADS || 1));
@@ -27,13 +26,13 @@ export async function transcribeVideo(filePath) {
   const chunks = buildChunkRanges(duration, TRANSCRIPTION_CHUNK_SECONDS);
 
   try {
-    const chunkFiles = await mapWithConcurrency(chunks, TRANSCRIPTION_CONCURRENCY, async ({ start, duration }, index) => {
+    const chunkFiles = await mapWithConcurrencySafe(chunks, TRANSCRIPTION_CONCURRENCY, async ({ start, duration }, index) => {
       const chunkPath = path.join(chunkRoot, `${String(index).padStart(4, "0")}.mp3`);
       await extractAudioChunk(filePath, chunkPath, start, duration);
       return { chunkPath, start };
     });
 
-    const transcripts = await mapWithConcurrency(chunkFiles, TRANSCRIPTION_CONCURRENCY, async ({ chunkPath, start }) => {
+    const transcripts = await mapWithConcurrencySafe(chunkFiles, TRANSCRIPTION_CONCURRENCY, async ({ chunkPath, start }) => {
       const response = await retryTranscriptionChunk(chunkPath);
       return (response?.segments || []).map((segment) => ({
         start: Number(segment.start || 0) + start,
@@ -79,6 +78,30 @@ function buildChunkRanges(duration, chunkSeconds) {
     start += chunkSeconds;
   }
   return chunks;
+}
+
+async function mapWithConcurrencySafe(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex++;
+      try {
+        results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      } catch (error) {
+        results[currentIndex] = error;
+      }
+    }
+  });
+
+  await Promise.all(workers);
+
+  const firstError = results.find((result) => result instanceof Error);
+  if (firstError) {
+    throw firstError;
+  }
+
+  return results;
 }
 
 function extractAudioChunk(videoPath, outputPath, start, duration) {
