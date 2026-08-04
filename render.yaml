@@ -19,7 +19,9 @@ services:
       - key: STORAGE_DIR
         value: ./storage
       - key: CLIENT_ORIGIN
-        sync: false # set to your Vercel URL(s), comma-separated
+        # Origins do not include a trailing slash. A trailing slash causes the
+        # browser's Origin header to fail the exact CORS match.
+        value: https://reel-generator-ten.vercel.app
       - key: MONGO_URI
         sync: false # your MongoDB Atlas connection string
       - key: MONGO_MAX_POOL_SIZE

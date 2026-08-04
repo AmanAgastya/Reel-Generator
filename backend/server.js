@@ -12,12 +12,26 @@ const allowedOrigins = (process.env.CLIENT_ORIGIN || "http://localhost:5173")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+function isAllowedOrigin(origin) {
+  return allowedOrigins.some((allowedOrigin) => {
+    if (allowedOrigin === origin) return true;
+    if (!allowedOrigin.includes("*")) return false;
+
+    // An explicitly configured wildcard, e.g. https://*.vercel.app, allows
+    // preview URLs while remaining restricted to one hostname label.
+    const pattern = `^${allowedOrigin
+      .replace(/[|\\{}()[\]^$+?.]/g, "\\$&")
+      .replace("*", "[^.]+")}$`;
+    return new RegExp(pattern).test(origin);
+  });
+}
+
 app.use(
   cors({
     origin: (origin, callback) => {
       // Allow non-browser requests (curl, server-to-server health checks) that
       // send no Origin header at all.
-      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      if (!origin || isAllowedOrigin(origin)) return callback(null, true);
       return callback(new Error(`CORS: origin ${origin} is not in CLIENT_ORIGIN`));
     },
   })

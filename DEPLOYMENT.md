@@ -112,7 +112,8 @@ CLIENT_ORIGIN=https://reel-generator.vercel.app
 
 (Comma-separate multiple values if you also want to allow a custom domain or
 `localhost:5173` for local testing against the prod backend, e.g.
-`https://reel-generator.vercel.app,http://localhost:5173`.)
+`https://reel-generator.vercel.app,http://localhost:5173`. To allow Vercel
+preview URLs too, add `https://*.vercel.app`.)
 
 Save — Render will redeploy automatically. This is required: without it, the
 browser will block API calls from your Vercel domain with a CORS error.
