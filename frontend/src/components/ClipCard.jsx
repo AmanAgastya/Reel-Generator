@@ -9,11 +9,14 @@ function formatTime(seconds) {
 
 export default function ClipCard({ jobId, clip, index }) {
   return (
-    <article className="clip-card">
+    <article className="clip-card generated-clip">
       <div className="clip-index">{String(index + 1).padStart(2, "0")}</div>
       <div className="clip-body">
-        <div className="clip-time">
-          {formatTime(clip.startSeconds)} &ndash; {formatTime(clip.endSeconds)}
+        <div className="clip-badge-row">
+          <span className="generated-badge">Generated</span>
+          <div className="clip-time">
+            {formatTime(clip.startSeconds)} &ndash; {formatTime(clip.endSeconds)}
+          </div>
         </div>
         <p className="clip-caption">{clip.caption}</p>
         <p className="clip-credit">{clip.creditLine}</p>
