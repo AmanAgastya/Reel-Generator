@@ -6,8 +6,8 @@ import Groq from "groq-sdk";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-small";
-const TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS = Math.max(60, Number(process.env.TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS || 7200));
-const TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES = Math.max(1, Number(process.env.TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES || 60 * 1024 * 1024));
+const TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS = Math.max(60, Number(process.env.TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS || 1200));
+const TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES = Math.max(1, Number(process.env.TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES || 25 * 1024 * 1024));
 const TRANSCRIPTION_CHUNK_SECONDS = Math.max(600, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 1200));
 const TRANSCRIPTION_MIN_CHUNK_SECONDS = Math.max(300, Number(process.env.TRANSCRIPTION_MIN_CHUNK_SECONDS || 600));
 const MAX_TRANSCRIPTION_CHUNKS = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_CHUNKS || 2));
@@ -15,16 +15,18 @@ const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_C
 const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 1));
 const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 3000);
 const AUDIO_EXTRACTION_THREADS = Math.max(1, Number(process.env.AUDIO_EXTRACTION_THREADS || 1));
-const AUDIO_BITRATE = process.env.AUDIO_BITRATE || "32k";
+const AUDIO_BITRATE = process.env.AUDIO_BITRATE || "16k";
 
 /**
  * Transcribes a video/audio file using Groq's hosted Whisper and returns
  * timestamped segments.
  * Returns: [{ start, end, text }, ...]
  */
-export async function transcribeVideo(filePath) {
+export async function transcribeVideo(filePath, onProgress = async () => {}) {
+  const progressCallback = typeof onProgress === "function" ? onProgress : async () => {};
   const chunkRoot = path.join(path.dirname(filePath), `${uuid()}-chunks`);
   await fs.promises.mkdir(chunkRoot, { recursive: true });
+  await progressCallback(0);
 
   const duration = await getMediaDuration(filePath);
 
@@ -34,7 +36,9 @@ export async function transcribeVideo(filePath) {
     const stats = await fs.promises.stat(fullAudioPath);
     if (stats.size <= TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES) {
       try {
-        return await transcribeFullAudio(fullAudioPath, 0);
+        const result = await transcribeFullAudio(fullAudioPath, 0);
+        await progressCallback(100);
+        return result;
       } catch (error) {
         if (!isRecoverableTranscriptionError(error)) throw error;
         console.warn("[transcriber] full audio transcription failed, falling back to chunked transcription.");
@@ -46,7 +50,9 @@ export async function transcribeVideo(filePath) {
 
   try {
     const transcripts = await mapWithConcurrencySafe(chunks, TRANSCRIPTION_CONCURRENCY, async ({ start, duration }, index) => {
-      return await transcribeVideoRange(filePath, chunkRoot, start, duration, index);
+      const result = await transcribeVideoRange(filePath, chunkRoot, start, duration, index);
+      await progressCallback(Math.round(((index + 1) / chunks.length) * 100));
+      return result;
     });
 
     const segments = transcripts

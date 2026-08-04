@@ -38,6 +38,7 @@ const jobSchema = new mongoose.Schema(
       default: "queued",
     },
     progress: { type: Number, default: 0 }, // 0-100
+    clipRenderCount: { type: Number, default: 0 },
     error: { type: String },
 
     videoDurationSeconds: { type: Number },

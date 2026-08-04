@@ -63,6 +63,7 @@ export async function processJob(jobId) {
     // 1. Get local video file
     job.status = "downloading";
     job.progress = 10;
+    if (!job.startedAt) job.startedAt = new Date();
     await job.save();
 
     const sourceFilePath =
@@ -75,13 +76,18 @@ export async function processJob(jobId) {
 
     // 2. Transcribe
     job.status = "transcribing";
-    job.progress = 35;
+    job.progress = 15;
     await job.save();
-    const transcript = await transcribeVideo(sourceFilePath);
+    const transcript = await transcribeVideo(sourceFilePath, async (percent) => {
+      job.status = "transcribing";
+      job.progress = 15 + Math.round(percent * 25);
+      await job.save();
+    });
     job.videoDurationSeconds = Math.max(
       0,
       (transcript[transcript.length - 1]?.end || 0) - (transcript[0]?.start || 0)
     );
+    job.progress = 40;
     await job.save();
 
     // 3. Analyze for best moments
@@ -98,6 +104,7 @@ export async function processJob(jobId) {
     // 4. Render each clip
     job.status = "clipping";
     job.progress = 70;
+    job.clipRenderCount = moments.length;
     await job.save();
 
     // Probe the source video's dimensions once per job instead of once per

@@ -5,6 +5,16 @@ import ClipCard from "../components/ClipCard.jsx";
 
 const STAGES = ["queued", "downloading", "transcribing", "analyzing", "clipping", "completed"];
 
+function formatElapsedTime(startedAt) {
+  const started = new Date(startedAt);
+  const seconds = Math.max(0, Math.floor((Date.now() - started.getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h`;
+}
+
 export default function JobStatus() {
   const { jobId } = useParams();
   const [job, setJob] = useState(null);
@@ -93,8 +103,20 @@ export default function JobStatus() {
             </div>
           )}
 
-          {job.status === "clipping" && totalClips > 0 && (
-            <p className="sub">Rendering clips in the background — {renderedCount}/{totalClips} ready so far.</p>
+          {job.startedAt && job.status !== "queued" && (
+            <p className="sub">Started {formatElapsedTime(job.startedAt)} ago.</p>
+          )}
+
+          {job.status === "clipping" && (
+            <>
+              {totalClips > 0 ? (
+                <p className="sub">Rendering clips in the background — {renderedCount}/{totalClips} ready so far.</p>
+              ) : job.clipRenderCount ? (
+                <p className="sub">Preparing to render {job.clipRenderCount} clips — this may take a few minutes.</p>
+              ) : (
+                <p className="sub">Preparing clips for rendering — this may take a few minutes.</p>
+              )}
+            </>
           )}
         </>
       )}
