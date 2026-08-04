@@ -6,8 +6,8 @@ const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-small";
 
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
-const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 4);
-const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 48000);
+const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 3);
+const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 42000);
 const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 1);
 const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 2));
 const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 2000);

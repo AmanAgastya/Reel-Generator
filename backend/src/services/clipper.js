@@ -11,7 +11,7 @@ const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
 const CLIP_VIDEO_PRESET = process.env.CLIP_VIDEO_PRESET || "ultrafast";
 const CLIP_VIDEO_CRF = Number(process.env.CLIP_VIDEO_CRF || 28);
 const CLIP_RENDER_THREADS = Math.max(1, Number(process.env.CLIP_RENDER_THREADS || 1));
-const CLIP_AUDIO_BITRATE = process.env.CLIP_AUDIO_BITRATE || "128k";
+const CLIP_AUDIO_BITRATE = process.env.CLIP_AUDIO_BITRATE || "96k";
 
 const CANVAS_WIDTH = Number(process.env.CLIP_WIDTH || 1080);
 const CANVAS_HEIGHT = Number(process.env.CLIP_HEIGHT || 1920);
