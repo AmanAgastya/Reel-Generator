@@ -7,12 +7,11 @@ const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-70b-versati
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
-const MAX_ANALYSIS_CHARS = 30_000;
-const MAX_CANDIDATE_CLIPS_PER_CHUNK = 3;
-// Transcript chunks are independent LLM calls — run several at once instead
-// of awaiting them one-by-one. Kept modest to stay comfortably under Groq's
-// per-account rate limits even on long videos with many chunks.
-const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 4));
+const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 3000);
+const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 1);
+// Transcript chunks are independent LLM calls. Keep chunk sizes very small and
+// concurrency single-threaded on memory-limited hosts.
+const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 1));
 
 function buildTranscriptLines(segments) {
   return segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);
@@ -62,26 +61,45 @@ Respond ONLY with JSON, no prose, in this exact shape:
   ]
 }`;
 
-  const completion = await groq.chat.completions.create({
-    model: ANALYSIS_MODEL,
-    messages: [
-      { role: "system", content: chunkPrompt },
-      { role: "user", content: transcriptText },
-    ],
-    response_format: { type: "json_object" },
-    temperature: 0.3,
-  });
+  try {
+    const completion = await groq.chat.completions.create({
+      model: ANALYSIS_MODEL,
+      messages: [
+        { role: "system", content: chunkPrompt },
+        { role: "user", content: transcriptText },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.3,
+    });
 
-  const parsed = JSON.parse(completion.choices[0].message.content);
-  return (Array.isArray(parsed.clips) ? parsed.clips : []).map((clip) => ({
-    start: Number(clip.start),
-    end: Number(clip.end),
-    caption: String(clip.caption || "").trim(),
-    hashtags: Array.isArray(clip.hashtags)
-      ? clip.hashtags.map((hashtag) => String(hashtag).replace(/^#/, "").trim()).filter(Boolean)
-      : [],
-    rankScore: Number(clip.rankScore),
-  }));
+    const parsed = JSON.parse(completion.choices[0].message.content);
+    return (Array.isArray(parsed.clips) ? parsed.clips : []).map((clip) => ({
+      start: Number(clip.start),
+      end: Number(clip.end),
+      caption: String(clip.caption || "").trim(),
+      hashtags: Array.isArray(clip.hashtags)
+        ? clip.hashtags.map((hashtag) => String(hashtag).replace(/^#/, "").trim()).filter(Boolean)
+        : [],
+      rankScore: Number(clip.rankScore),
+    }));
+  } catch (error) {
+    const isRateLimit =
+      error?.message?.includes("rate_limit_exceeded") ||
+      error?.message?.includes("Request too large");
+
+    if (isRateLimit && transcriptText.length > 1000) {
+      const splitPoint = Math.max(transcriptText.lastIndexOf("\n", transcriptText.length / 2), transcriptText.length / 4);
+      const left = transcriptText.slice(0, splitPoint);
+      const right = transcriptText.slice(splitPoint);
+      const [leftClips, rightClips] = await Promise.all([
+        analyzeTranscriptChunk(left, chunkIndex, maxClips),
+        analyzeTranscriptChunk(right, chunkIndex + 1, maxClips),
+      ]);
+      return [...leftClips, ...rightClips].slice(0, maxClips);
+    }
+
+    throw error;
+  }
 }
 
 function normalizeClips(clips, ownerCreditName) {
