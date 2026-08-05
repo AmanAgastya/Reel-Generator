@@ -96,6 +96,17 @@ Respond ONLY with JSON, no prose, in this exact shape:
 }`;
 
   try {
+    // The completion has to hold up to `maxClips` full clip objects
+    // (start/end/caption/hashtags/rankScore) as JSON. A flat 600-token cap
+    // only has room for ~4-6 of those - once the model hits it mid-list,
+    // JSON mode makes it close the array early to stay valid rather than
+    // return a truncated/invalid document, so a chunk silently comes back
+    // with only a couple of clips even though it was asked for up to 30.
+    // This is what produced the "only 2 clips" result: the token budget,
+    // not the transcript or the prompt, was capping clip count. Scale the
+    // budget with maxClips instead of using a fixed value.
+    const maxTokensForChunk = Math.min(6000, 300 + maxClips * 110);
+
     const completion = await retryAnalysisRequest(() =>
       groq.chat.completions.create({
         model: ANALYSIS_MODEL,
@@ -105,7 +116,7 @@ Respond ONLY with JSON, no prose, in this exact shape:
         ],
         response_format: { type: "json_object" },
         temperature: 0.2,
-        max_tokens: 600,
+        max_tokens: maxTokensForChunk,
       })
     );
 
