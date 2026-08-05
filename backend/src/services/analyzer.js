@@ -8,8 +8,9 @@ const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
 const MIN_CLIPS_PER_JOB = Number(process.env.MIN_CLIPS_PER_JOB || 8);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
-const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 42000);
-const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 15);
+const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 18000);
+const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 20);
+const CHUNK_OVERLAP_LINES = Number(process.env.CHUNK_OVERLAP_LINES || 3);
 const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 2));
 const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 2000);
 const ANALYSIS_MIN_INTERVAL_MS = Number(process.env.ANALYSIS_MIN_INTERVAL_MS || 8000);
@@ -35,8 +36,10 @@ function chunkTranscript(lines) {
     const lineLength = line.length + 1;
     if (currentLength + lineLength > MAX_ANALYSIS_CHARS && current.length) {
       chunks.push(current.join("\n"));
-      current = [line];
-      currentLength = lineLength;
+      current = current.slice(Math.max(0, current.length - CHUNK_OVERLAP_LINES));
+      currentLength = current.reduce((sum, item) => sum + item.length + 1, 0);
+      current.push(line);
+      currentLength += lineLength;
     } else {
       current.push(line);
       currentLength += lineLength;
@@ -56,7 +59,8 @@ timestamped transcript chunk from a longer video. Identify the strongest,
 self-contained moments that would work as standalone short clips (${MIN_CLIP_SECONDS}-${MAX_CLIP_SECONDS} seconds each).
 
 Rules:
-- Pick up to ${maxClips} moments, ranked best first. Return at least one if the transcript chunk contains a suitable moment.
+- Identify the strongest standalone moments in this transcript chunk, and return up to ${maxClips} of them.
+- If the chunk contains enough strong moments, return the full ${maxClips}.
 - Each moment must make sense on its own without earlier context.
 - start/end must be real timestamps drawn from the transcript, snapped to natural sentence boundaries.
 - Write a short, punchy caption (under 80 characters) for each clip. Make the caption feel like a strong social hook for a short-form video, specific to this exact moment, and avoid vague copy like "Key moment" or "Watch this".
@@ -86,6 +90,7 @@ Respond ONLY with JSON, no prose, in this exact shape:
 
     const parsed = JSON.parse(completion.choices[0].message.content || "{}");
     return (Array.isArray(parsed.clips) ? parsed.clips : []).map((clip) => ({
+      chunkIndex,
       start: Number(clip.start),
       end: Number(clip.end),
       caption: String(clip.caption || "").trim(),
@@ -308,7 +313,7 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
   const candidateClips = chunkResults.flat();
 
   const rankedClips = normalizeClips(
-    candidateClips.sort((a, b) => b.rankScore - a.rankScore).slice(0, requestedClipCount),
+    selectDistributedClips(candidateClips, requestedClipCount),
     ownerCreditName
   );
 
@@ -324,4 +329,63 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
       creditLine: `Original video by ${ownerCreditName}`,
     },
   ];
+}
+
+function selectDistributedClips(clips, requestedClipCount) {
+  const clipsByChunk = new Map();
+  for (const clip of clips) {
+    if (!Number.isFinite(clip.start) || !Number.isFinite(clip.end)) continue;
+    if (!clipsByChunk.has(clip.chunkIndex)) clipsByChunk.set(clip.chunkIndex, []);
+    clipsByChunk.get(clip.chunkIndex).push(clip);
+  }
+
+  for (const chunkClips of clipsByChunk.values()) {
+    chunkClips.sort((a, b) => b.rankScore - a.rankScore);
+  }
+
+  const chunkIndices = [...clipsByChunk.keys()].sort((a, b) => a - b);
+  const selected = [];
+  const usedRanges = [];
+  const maxPerChunk = Math.max(1, Math.ceil(requestedClipCount / Math.max(1, chunkIndices.length)));
+
+  for (let pass = 0; pass < maxPerChunk && selected.length < requestedClipCount; pass += 1) {
+    for (const chunkIndex of chunkIndices) {
+      if (selected.length >= requestedClipCount) break;
+      const chunkClips = clipsByChunk.get(chunkIndex) || [];
+      const candidate = chunkClips[pass];
+      if (!candidate) continue;
+      if (usedRanges.some((range) => isClipOverlap(range, candidate))) continue;
+      selected.push(candidate);
+      usedRanges.push({ start: candidate.start, end: candidate.end });
+    }
+  }
+
+  if (selected.length < requestedClipCount) {
+    const filler = clips
+      .slice()
+      .sort((a, b) => b.rankScore - a.rankScore)
+      .filter((clip) => !selected.includes(clip))
+      .filter((clip) => !usedRanges.some((range) => isClipOverlap(range, clip)));
+    for (const clip of filler) {
+      if (selected.length >= requestedClipCount) break;
+      selected.push(clip);
+      usedRanges.push({ start: clip.start, end: clip.end });
+    }
+  }
+
+  return selected.slice(0, requestedClipCount);
+}
+
+function isClipOverlap(existing, clip) {
+  const overlapStart = Math.max(existing.start, clip.start);
+  const overlapEnd = Math.min(existing.end, clip.end);
+  const overlap = Math.max(0, overlapEnd - overlapStart);
+  const minDuration = Math.min(existing.end - existing.start, clip.end - clip.start);
+  const minimumOverlap = Math.max(5, minDuration * 0.35);
+
+  return (
+    overlap >= minimumOverlap ||
+    Math.abs(existing.start - clip.start) <= 5 ||
+    Math.abs(existing.end - clip.end) <= 5
+  );
 }

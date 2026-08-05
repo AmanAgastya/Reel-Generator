@@ -77,7 +77,6 @@ export default function ClipCard({ jobId, clip, index }) {
             {formatTime(clip.startSeconds)} &ndash; {formatTime(clip.endSeconds)}
           </div>
         </div>
-        <p className="clip-caption">{caption}</p>
         <p className="clip-credit">{clip.creditLine}</p>
         <div className="clip-hashtags">
           {hashtags.map((tag) => (
