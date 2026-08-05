@@ -148,15 +148,32 @@ function buildFilterComplex({ fgWidth, fgHeight, fgX, fgY }) {
   const W = CANVAS_WIDTH;
   const H = CANVAS_HEIGHT;
 
+  // Backdrop blur cost in ffmpeg scales with pixel count, and gblur at a
+  // large sigma is by far the most expensive step in this whole filter
+  // graph - it was blurring the full canvas (W x H, unchanged) at
+  // sigma=30 on every single frame of every clip. Blurring a heavily
+  // downscaled copy of the same cropped frame and scaling the *blurred*
+  // result back up to the same final W x H gives a visually equivalent
+  // (in fact smoother) backdrop for a fraction of the cost - gblur now
+  // runs on a ~quarter-size image instead of the full canvas, cutting the
+  // backdrop blur's per-frame work by roughly 20x. Nothing about the
+  // output changes: final canvas size, crop, foreground scaling, CRF,
+  // preset, and audio settings are all untouched - only how the blurred
+  // backdrop pixels get computed.
+  const bgBlurWidth = Math.max(2, evenFloor(W / 4));
+  const bgBlurHeight = Math.max(2, evenFloor(H / 4));
+
   return [
     // Split the source once: one copy becomes the blurred backdrop, the
     // other is the full, undistorted foreground.
     `[0:v]split=2[bgsrc][fgsrc]`,
 
-    // Backdrop: cover-crop to fill the canvas, then blur + darken + boost
-    // saturation slightly so it reads as an intentional background rather
-    // than a mistake, and never lets plain black bars show.
-    `[bgsrc]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},gblur=sigma=30,eq=brightness=-0.08:saturation=1.3[bg]`,
+    // Backdrop: cover-crop to fill the canvas, downscale before blurring
+    // (see comment above), blur, then scale back up to the same canvas
+    // size and darken/boost saturation slightly so it reads as an
+    // intentional background rather than a mistake, and never lets plain
+    // black bars show.
+    `[bgsrc]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},scale=${bgBlurWidth}:${bgBlurHeight},gblur=sigma=8,scale=${W}:${H},eq=brightness=-0.08:saturation=1.3[bg]`,
 
     // Foreground: scaled to fit entirely inside the canvas - the full
     // frame is always visible, nothing is cropped off the sides or top.

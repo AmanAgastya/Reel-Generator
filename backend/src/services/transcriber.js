@@ -112,12 +112,23 @@ async function transcribeFullAudio(audioPath, offset) {
   return parseTranscriptionResponse(response, offset);
 }
 
+// Whisper's verbose_json segments carry a `no_speech_prob` field (Groq's
+// output matches OpenAI's Whisper format) - the model's own confidence that
+// a stretch of audio isn't speech at all (silence, room tone, pure music).
+// This was previously discarded, so dead air/noise segments could still
+// reach the analyzer and occasionally get treated as a "moment" worth
+// clipping. Filtering them out here means the analyzer only ever sees
+// segments Whisper itself is confident contain actual speech.
+const NO_SPEECH_PROB_THRESHOLD = Number(process.env.NO_SPEECH_PROB_THRESHOLD || 0.6);
+
 function parseTranscriptionResponse(response, offset) {
-  return (response?.segments || []).map((segment) => ({
-    start: Number(segment.start || 0) + offset,
-    end: Number(segment.end || 0) + offset,
-    text: String(segment.text || "").trim(),
-  }));
+  return (response?.segments || [])
+    .filter((segment) => Number(segment.no_speech_prob ?? 0) < NO_SPEECH_PROB_THRESHOLD)
+    .map((segment) => ({
+      start: Number(segment.start || 0) + offset,
+      end: Number(segment.end || 0) + offset,
+      text: String(segment.text || "").trim(),
+    }));
 }
 
 function getMediaDuration(filePath) {

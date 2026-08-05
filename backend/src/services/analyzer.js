@@ -1,4 +1,6 @@
 import Groq from "groq-sdk";
+import ffmpeg from "fluent-ffmpeg";
+import os from "os";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -43,6 +45,15 @@ const ANALYSIS_MIN_INTERVAL_MS = Number(process.env.ANALYSIS_MIN_INTERVAL_MS || 
 // limits for typical transcript chunk sizes while cutting that stage's
 // time roughly 4x; lower this back to 1 if you're on a low-tier Groq key.
 const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 4));
+// The LLM only ever sees text - it has no way to tell a flat, low-energy
+// retelling from a genuinely excited, high-energy moment that reads the
+// same on the page. Weighing each candidate's actual audio loudness in
+// alongside the LLM's own rankScore grounds "best moments" in something
+// the transcript can't capture: how the moment actually sounds. Kept as a
+// minority weight (see blendScores below) since the LLM's read on content
+// quality still matters more than raw volume.
+const AUDIO_ENERGY_WEIGHT = Math.max(0, Math.min(1, Number(process.env.AUDIO_ENERGY_WEIGHT ?? 0.3)));
+const AUDIO_ENERGY_CONCURRENCY = Math.max(1, Number(process.env.AUDIO_ENERGY_CONCURRENCY || Math.min(6, os.cpus().length)));
 
 function buildTranscriptLines(segments) {
   return segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);
@@ -221,6 +232,74 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Measures a candidate clip's average loudness (mean_volume in dB) by
+ * running ffmpeg's `volumedetect` filter over just that time range, audio
+ * only (`-vn`, no video decode) - this is cheap even on long source videos
+ * since it only reads/decodes the seconds inside the clip, not the whole
+ * file. Returns null instead of throwing if ffmpeg fails for any reason,
+ * so a probe issue degrades to "no energy signal" for that clip rather
+ * than failing the whole analysis stage.
+ */
+function measureClipLoudness(sourceFilePath, start, end) {
+  return new Promise((resolve) => {
+    let stderrOutput = "";
+    ffmpeg(sourceFilePath)
+      .inputOptions([`-ss ${Math.max(0, start)}`])
+      .outputOptions([`-t ${Math.max(0.5, end - start)}`, "-vn", "-af", "volumedetect", "-f", "null"])
+      .output(process.platform === "win32" ? "NUL" : "/dev/null")
+      .on("stderr", (line) => {
+        stderrOutput += `${line}\n`;
+      })
+      .on("end", () => resolve(parseMeanVolumeDb(stderrOutput)))
+      .on("error", () => resolve(null))
+      .run();
+  });
+}
+
+function parseMeanVolumeDb(stderrOutput) {
+  const match = stderrOutput.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/);
+  return match ? Number(match[1]) : null;
+}
+
+// Typical spoken audio sits roughly between -35dB (quiet/background) and
+// 0dB (loud/excited, close to clipping) after normalization - clamping and
+// rescaling into that band turns the raw dB reading into a comparable 0-1
+// score alongside the LLM's own 0-1 rankScore.
+function normalizeLoudnessScore(meanVolumeDb) {
+  if (meanVolumeDb === null || !Number.isFinite(meanVolumeDb)) return null;
+  const MIN_DB = -35;
+  const MAX_DB = 0;
+  return Math.max(0, Math.min(1, (meanVolumeDb - MIN_DB) / (MAX_DB - MIN_DB)));
+}
+
+/**
+ * Enriches candidate clips with an audio-energy signal and blends it into
+ * each clip's rankScore, so selection weighs actual vocal energy alongside
+ * the LLM's text-only read of the moment. Mutates and returns the same
+ * array. If sourceFilePath isn't available (e.g. legacy callers), this is
+ * a no-op - selection just falls back to the LLM's rankScore alone.
+ */
+async function applyAudioEnergyScores(candidateClips, sourceFilePath) {
+  if (!sourceFilePath || !candidateClips.length) return candidateClips;
+
+  await mapWithConcurrency(candidateClips, AUDIO_ENERGY_CONCURRENCY, async (clip) => {
+    try {
+      const meanVolumeDb = await measureClipLoudness(sourceFilePath, clip.start, clip.end);
+      const energyScore = normalizeLoudnessScore(meanVolumeDb);
+      const llmScore = Number.isFinite(clip.rankScore) ? clip.rankScore : 0.5;
+      clip.energyScore = energyScore;
+      clip.llmScore = llmScore;
+      clip.rankScore =
+        energyScore === null ? llmScore : llmScore * (1 - AUDIO_ENERGY_WEIGHT) + energyScore * AUDIO_ENERGY_WEIGHT;
+    } catch {
+      // Leave rankScore as the LLM's original value for this clip.
+    }
+  });
+
+  return candidateClips;
+}
+
 function normalizeClips(clips, ownerCreditName) {
   return clips
     .filter(
@@ -308,7 +387,7 @@ ${clipTranscript}`;
  * standalone moments and produce a caption + hashtags for each.
  * Returns: [{ start, end, caption, hashtags: [...], rankScore }, ...]
  */
-export async function analyzeBestMoments(transcript, { ownerCreditName }) {
+export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFilePath }) {
   const segments = transcript
     .map((segment) => ({
       start: Number(segment.start),
@@ -390,6 +469,10 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
     );
   }
   const candidateClips = chunkResults.flat();
+
+  // Ground the LLM's text-only rankScore in how each candidate actually
+  // sounds before picking the final set - see applyAudioEnergyScores.
+  await applyAudioEnergyScores(candidateClips, sourceFilePath);
 
   const rankedClips = normalizeClips(
     selectDistributedClips(candidateClips, requestedClipCount),

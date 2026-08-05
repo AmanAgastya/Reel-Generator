@@ -100,6 +100,7 @@ export async function processJob(jobId) {
     await job.save();
     const moments = await analyzeBestMoments(transcript, {
       ownerCreditName: job.ownerCreditName,
+      sourceFilePath,
     });
     if (!moments.length) {
       throw new Error("No usable moments were found in the video transcript.");
