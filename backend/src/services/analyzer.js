@@ -58,7 +58,7 @@ Rules:
 - Pick up to ${maxClips} moments, ranked best first. Return at least one if the transcript chunk contains a suitable moment.
 - Each moment must make sense on its own without earlier context.
 - start/end must be real timestamps drawn from the transcript, snapped to natural sentence boundaries.
-- Write a short, punchy caption (under 100 characters) for each clip.
+- Write a short, punchy caption (under 80 characters) for each clip. Make the caption feel like a strong social hook for a short-form video, specific to this exact moment, and avoid vague copy like "Key moment" or "Watch this".
 - Suggest 3-5 relevant hashtags per clip (no # symbol, just the words).
 - Do not fabricate timestamps or text that isn't supported by the transcript.
 
@@ -160,6 +160,69 @@ function normalizeClips(clips, ownerCreditName) {
       rankScore: Number.isFinite(clip.rankScore) ? clip.rankScore : 0.5,
       creditLine: `Original video by ${ownerCreditName}`,
     }));
+}
+
+export async function generateCaptionForClip(transcript, { start, end }) {
+  const segments = transcript
+    .map((segment) => ({
+      start: Number(segment.start),
+      end: Number(segment.end),
+      text: String(segment.text || "").trim(),
+    }))
+    .filter(
+      (segment) =>
+        Number.isFinite(segment.start) &&
+        Number.isFinite(segment.end) &&
+        segment.end > segment.start &&
+        segment.text
+    );
+
+  if (!segments.length) {
+    throw new Error("No timestamped transcript is available for caption generation.");
+  }
+
+  const clipSegments = segments.filter(
+    (segment) => segment.end >= start && segment.start <= end
+  );
+  const transcriptLines = buildTranscriptLines(
+    clipSegments.length ? clipSegments : segments
+  );
+  const clipTranscript = transcriptLines.join("\n");
+
+  const prompt = `You are an expert short-form video editor.
+You are given a transcript excerpt for a short clip from a longer video.
+The clip runs from ${start} to ${end} seconds.
+Write a single, specific, social-media-ready caption for this clip.
+Keep it under 80 characters, be urgent and compelling, and avoid vague phrases like \"Key moment\" or \"Watch this.\"
+Also suggest 3-5 relevant hashtags (no # symbol) that help this clip perform on Shorts/Reels/TikTok.
+Do not invent any details not supported by the transcript.
+
+Respond ONLY with JSON in this exact shape:
+{
+  "caption": "...",
+  "hashtags": ["...", "...", "..."]
+}
+
+Transcript:
+${clipTranscript}`;
+
+  const completion = await retryAnalysisRequest(() =>
+    groq.chat.completions.create({
+      model: ANALYSIS_MODEL,
+      messages: [{ role: "system", content: prompt }],
+      response_format: { type: "json_object" },
+      temperature: 0.2,
+      max_output_tokens: 180,
+    })
+  );
+
+  const parsed = JSON.parse(completion.choices[0].message.content || "{}");
+  return {
+    caption: String(parsed.caption || "").trim(),
+    hashtags: Array.isArray(parsed.hashtags)
+      ? parsed.hashtags.map((hashtag) => String(hashtag).replace(/^#/, "").trim()).filter(Boolean)
+      : [],
+  };
 }
 
 /**

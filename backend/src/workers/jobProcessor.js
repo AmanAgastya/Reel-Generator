@@ -86,6 +86,7 @@ export async function processJob(jobId) {
       job.progress = 15 + Math.round(percent * 25);
       await job.save();
     });
+    job.transcript = transcript;
     job.videoDurationSeconds = Math.max(
       0,
       (transcript[transcript.length - 1]?.end || 0) - (transcript[0]?.start || 0)

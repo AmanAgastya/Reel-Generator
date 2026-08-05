@@ -533,6 +533,42 @@ body::after {
 
 .clip-hashtags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 
+.clip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.clip-actions .download,
+.clip-actions .regenerate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.8rem 1rem;
+  border-radius: 999px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.clip-actions .download {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.clip-actions .regenerate {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: transparent;
+  color: #ffffff;
+}
+
+.clip-actions .regenerate:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .hashtag {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 11px;

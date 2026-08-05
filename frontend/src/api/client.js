@@ -46,21 +46,21 @@ export async function createJobFromUrl({ url, ownershipConfirmed, ownerCreditNam
 }
 
 export async function createJobFromUpload({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
-  const { data: session } = await retryNetworkRequest(() =>
-    client.post("/jobs/uploads/init", { ownershipConfirmed, ownerCreditName, originalFileName: file.name })
-  );
-  const chunkSize = 5 * 1024 * 1024;
-  const totalChunks = Math.ceil(file.size / chunkSize);
-  for (let index = 0; index < totalChunks; index += 1) {
-    const form = new FormData();
-    form.append("chunk", file.slice(index * chunkSize, Math.min((index + 1) * chunkSize, file.size)), "chunk.part");
-    form.append("index", String(index));
-    await retryNetworkRequest(() => client.post(`/jobs/uploads/${session.uploadId}/chunks`, form));
-    onProgress?.(Math.round(((index + 1) / totalChunks) * 100));
-  }
+  const form = new FormData();
+  form.append("video", file);
+  form.append("ownershipConfirmed", ownershipConfirmed);
+  form.append("ownerCreditName", ownerCreditName);
+
   const { data } = await retryNetworkRequest(() =>
-    client.post(`/jobs/uploads/${session.uploadId}/complete`, { totalChunks })
+    client.post("/jobs/from-upload", form, {
+      onUploadProgress: (event) => {
+        if (event.total) {
+          onProgress?.(Math.round((event.loaded / event.total) * 100));
+        }
+      },
+    })
   );
+
   return data;
 }
 
@@ -92,4 +92,9 @@ export function clipDownloadUrl(jobId, clipId) {
 
 export function clipStreamUrl(jobId, clipId) {
   return `${API_BASE}/jobs/${jobId}/clips/${clipId}/stream`;
+}
+
+export async function regenerateClipCaption(jobId, clipId) {
+  const { data } = await client.post(`/jobs/${jobId}/clips/${clipId}/regenerate-caption`);
+  return data.clip;
 }

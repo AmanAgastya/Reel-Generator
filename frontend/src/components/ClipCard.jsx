@@ -1,5 +1,5 @@
-import React from "react";
-import { clipDownloadUrl, clipStreamUrl } from "../api/client.js";
+import React, { useEffect, useState } from "react";
+import { clipDownloadUrl, clipStreamUrl, regenerateClipCaption } from "../api/client.js";
 
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
@@ -9,6 +9,29 @@ function formatTime(seconds) {
 
 export default function ClipCard({ jobId, clip, index }) {
   const isRendered = clip.status === "rendered";
+  const [caption, setCaption] = useState(clip.caption);
+  const [hashtags, setHashtags] = useState(clip.hashtags || []);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setCaption(clip.caption);
+    setHashtags(clip.hashtags || []);
+  }, [clip.caption, clip.hashtags]);
+
+  async function handleRegenerateCaption() {
+    setIsRegenerating(true);
+    setError("");
+    try {
+      const updated = await regenerateClipCaption(jobId, clip._id);
+      setCaption(updated.caption || caption);
+      setHashtags(Array.isArray(updated.hashtags) ? updated.hashtags : hashtags);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || "Failed to regenerate caption.");
+    } finally {
+      setIsRegenerating(false);
+    }
+  }
 
   return (
     <article className="clip-card generated-clip">
@@ -54,20 +77,31 @@ export default function ClipCard({ jobId, clip, index }) {
             {formatTime(clip.startSeconds)} &ndash; {formatTime(clip.endSeconds)}
           </div>
         </div>
-        <p className="clip-caption">{clip.caption}</p>
+        <p className="clip-caption">{caption}</p>
         <p className="clip-credit">{clip.creditLine}</p>
         <div className="clip-hashtags">
-          {(clip.hashtags || []).map((tag) => (
+          {hashtags.map((tag) => (
             <span key={tag} className="hashtag">
               #{tag}
             </span>
           ))}
         </div>
         {isRendered && (
-          <a className="download" href={clipDownloadUrl(jobId, clip._id)} download>
-            &darr; Download clip
-          </a>
+          <div className="clip-actions">
+            <a className="download" href={clipDownloadUrl(jobId, clip._id)} download>
+              &darr; Download clip
+            </a>
+            <button
+              type="button"
+              className="regenerate"
+              onClick={handleRegenerateCaption}
+              disabled={isRegenerating}
+            >
+              {isRegenerating ? "Regenerating…" : "Regenerate caption"}
+            </button>
+          </div>
         )}
+        {error && <p className="error">{error}</p>}
       </div>
     </article>
   );

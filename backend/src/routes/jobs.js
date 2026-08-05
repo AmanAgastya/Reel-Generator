@@ -6,6 +6,7 @@ import Job from "../models/Job.js";
 import Clip from "../models/Clip.js";
 import { upload, uploadChunk } from "../middleware/upload.js";
 import { enqueueJob } from "../workers/jobProcessor.js";
+import { generateCaptionForClip } from "../services/analyzer.js";
 
 const router = express.Router();
 const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
@@ -144,6 +145,39 @@ router.get("/:id", asyncHandler(async (req, res) => {
       return res.status(400).json({ error: "Invalid job id" });
     }
     throw err;
+  }
+}));
+
+router.post("/:id/clips/:clipId/regenerate-caption", asyncHandler(async (req, res) => {
+  try {
+    const job = await Job.findById(req.params.id);
+    if (!job) return res.status(404).json({ error: "Job not found." });
+
+    const clip = await Clip.findById(req.params.clipId);
+    if (!clip || String(clip.job) !== req.params.id) {
+      return res.status(404).json({ error: "Clip not found." });
+    }
+
+    if (!Array.isArray(job.transcript) || job.transcript.length === 0) {
+      return res.status(400).json({ error: "Transcript data is not available for this job." });
+    }
+
+    const { caption, hashtags } = await generateCaptionForClip(job.transcript, {
+      start: clip.startSeconds,
+      end: clip.endSeconds,
+    });
+
+    clip.caption = caption || clip.caption;
+    clip.hashtags = Array.isArray(hashtags) && hashtags.length ? hashtags : clip.hashtags;
+    await clip.save();
+
+    res.json({ clip });
+  } catch (err) {
+    console.error("[jobs] regenerate caption failed:", err);
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid clip id" });
+    }
+    res.status(500).json({ error: err.message || "Failed to regenerate caption." });
   }
 }));
 
