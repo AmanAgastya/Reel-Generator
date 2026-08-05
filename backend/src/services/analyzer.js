@@ -80,7 +80,7 @@ Respond ONLY with JSON, no prose, in this exact shape:
         ],
         response_format: { type: "json_object" },
         temperature: 0.2,
-        max_output_tokens: 600,
+        max_tokens: 600,
       })
     );
 
@@ -156,7 +156,7 @@ function normalizeClips(clips, ownerCreditName) {
     .slice(0, MAX_CLIPS_PER_JOB)
     .map((clip) => ({
       ...clip,
-      caption: clip.caption || "",
+      caption: String(clip.caption || ""),
       hashtags: Array.isArray(clip.hashtags) ? clip.hashtags : [],
       rankScore: Number.isFinite(clip.rankScore) ? clip.rankScore : 0.5,
       creditLine: `Original video by ${ownerCreditName}`,
@@ -213,7 +213,7 @@ ${clipTranscript}`;
       messages: [{ role: "system", content: prompt }],
       response_format: { type: "json_object" },
       temperature: 0.2,
-      max_output_tokens: 180,
+      max_tokens: 180,
     })
   );
 

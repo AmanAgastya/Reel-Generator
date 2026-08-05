@@ -137,7 +137,7 @@ export async function processJob(jobId) {
         job: job._id,
         startSeconds: moment.start,
         endSeconds: moment.end,
-        caption: moment.caption,
+        caption: String(moment.caption || ""),
         hashtags: moment.hashtags || [],
         creditLine: moment.creditLine,
         rankScore: moment.rankScore,
