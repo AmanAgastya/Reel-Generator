@@ -25,10 +25,28 @@ export async function downloadYouTubeVideo(url) {
     );
   }
 
+  // The render pipeline scales everything down to fit inside the output
+  // canvas (see clipper.js CANVAS_WIDTH/CANVAS_HEIGHT), so pulling a
+  // 1080p/4K master when the canvas only needs e.g. 720px is wasted
+  // bandwidth and wasted decode time for every single clip cut from it.
+  // Derive the download cap from the same CLIP_WIDTH/CLIP_HEIGHT env vars
+  // the renderer uses (falling back to the same 720x1280 default), so the
+  // two stay in sync automatically instead of needing a second number
+  // tuned by hand. This is the single biggest lever on total job time for
+  // anything sourced from a high-res YouTube upload. Override with
+  // YTDLP_MAX_HEIGHT directly if a sharper source is ever needed.
+  // Source footage is almost always landscape, so its *height* is the
+  // dimension that ends up constrained by the canvas's width once the full
+  // frame is scaled to fit inside the portrait box (see fitContentBox in
+  // clipper.js) — e.g. a 720-wide canvas never benefits from more than
+  // ~720p source height.
+  const canvasWidth = Number(process.env.CLIP_WIDTH || 720);
+  const maxHeight = Math.max(360, Number(process.env.YTDLP_MAX_HEIGHT || canvasWidth));
+
   try {
     await youtubedl(url, {
       output: outputTemplate,
-      format: "mp4[height<=1080]/best[height<=1080]/best",
+      format: `mp4[height<=${maxHeight}]/best[height<=${maxHeight}]/best`,
       noCheckCertificates: true,
       noWarnings: true,
       preferFreeFormats: true,
@@ -36,7 +54,7 @@ export async function downloadYouTubeVideo(url) {
       // Fetch multiple fragments of the video in parallel instead of one
       // stream at a time — the single biggest download-speed lever yt-dlp
       // exposes, especially on DASH/HLS-served formats.
-      concurrentFragments: Math.max(1, Number(process.env.YTDLP_CONCURRENT_FRAGMENTS || 8)),
+      concurrentFragments: Math.max(1, Number(process.env.YTDLP_CONCURRENT_FRAGMENTS || 16)),
       retries: 5,
       fragmentRetries: 5,
       ...(cookiesFile ? { cookies: cookiesFile } : {}),

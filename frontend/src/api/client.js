@@ -89,3 +89,7 @@ export async function getJob(jobId) {
 export function clipDownloadUrl(jobId, clipId) {
   return `${API_BASE}/jobs/${jobId}/clips/${clipId}/download`;
 }
+
+export function clipStreamUrl(jobId, clipId) {
+  return `${API_BASE}/jobs/${jobId}/clips/${clipId}/stream`;
+}

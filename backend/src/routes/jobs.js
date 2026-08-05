@@ -152,11 +152,81 @@ router.get("/", asyncHandler(async (req, res) => {
   res.json(jobs);
 }));
 
+/**
+ * Builds a friendly, filesystem-safe download filename from a clip's
+ * caption (e.g. "clip-03-when-things-got-real.mp4") instead of exposing
+ * the raw UUID the file is stored under on disk.
+ */
+function friendlyClipFileName(clip) {
+  const slugSource = String(clip.caption || "clip").trim().toLowerCase();
+  const slug =
+    slugSource
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "clip";
+  return `${slug}.mp4`;
+}
+
+/**
+ * Resolves a clip's on-disk file and confirms it actually exists before
+ * express tries to stream it, so a missing/expired file produces a clear
+ * JSON 404 instead of a raw ENOENT bubbling up as an ugly 500.
+ */
+async function resolveClipFile(req, res) {
+  const clip = await Clip.findById(req.params.clipId);
+  if (!clip || String(clip.job) !== req.params.id) {
+    res.status(404).json({ error: "Clip not found." });
+    return null;
+  }
+  if (clip.status !== "rendered" || !clip.filePath) {
+    res.status(409).json({ error: "This clip hasn't finished rendering yet." });
+    return null;
+  }
+  const filePath = path.resolve(clip.filePath);
+  try {
+    await fs.access(filePath);
+  } catch {
+    res.status(404).json({
+      error: "This clip's file is no longer available on the server (it may have been cleaned up after a restart).",
+    });
+    return null;
+  }
+  return { clip, filePath };
+}
+
+// Streams the clip inline so it can be played in the in-page <video> player.
+// Express's `send` (used under sendFile) natively honors Range headers, so
+// scrubbing/seeking works without any extra code here.
+router.get("/:id/clips/:clipId/stream", asyncHandler(async (req, res) => {
+  try {
+    const resolved = await resolveClipFile(req, res);
+    if (!resolved) return;
+    res.setHeader("Content-Disposition", "inline");
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.sendFile(resolved.filePath, { headers: { "Content-Type": "video/mp4" } });
+  } catch (err) {
+    console.error("[jobs] stream clip failed:", err);
+    if (err.name === "CastError") {
+      return res.status(400).json({ error: "Invalid clip id" });
+    }
+    throw err;
+  }
+}));
+
 router.get("/:id/clips/:clipId/download", asyncHandler(async (req, res) => {
   try {
-    const clip = await Clip.findById(req.params.clipId);
-    if (!clip || !clip.filePath) return res.status(404).json({ error: "clip not found" });
-    res.download(path.resolve(clip.filePath));
+    const resolved = await resolveClipFile(req, res);
+    if (!resolved) return;
+    res.download(resolved.filePath, friendlyClipFileName(resolved.clip), (err) => {
+      // res.download() streams asynchronously after this handler returns,
+      // so a mid-stream failure (e.g. the file disappearing) has to be
+      // handled in this callback — a try/catch around the call above would
+      // never see it.
+      if (err && !res.headersSent) {
+        console.error("[jobs] download clip failed mid-stream:", err);
+        res.status(500).json({ error: "Failed to download clip." });
+      }
+    });
   } catch (err) {
     console.error("[jobs] download clip failed:", err);
     if (err.name === "CastError") {

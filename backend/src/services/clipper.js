@@ -1,16 +1,27 @@
 import ffmpeg from "fluent-ffmpeg";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { v4 as uuid } from "uuid";
 
 const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
 
-// "veryfast" is only marginally slower than "ultrafast" but produces
-// noticeably cleaner, less blocky output at the same CRF - worth it since
-// clips are short (15-60s) and the visual quality is the whole point.
+// "ultrafast" trades a little compression efficiency for the fastest
+// possible encode — worth it since clips are short (15-60s) and total job
+// turnaround matters more here than shaving a few KB off file size.
 const CLIP_VIDEO_PRESET = process.env.CLIP_VIDEO_PRESET || "ultrafast";
 const CLIP_VIDEO_CRF = Number(process.env.CLIP_VIDEO_CRF || 28);
-const CLIP_RENDER_THREADS = Math.max(1, Number(process.env.CLIP_RENDER_THREADS || 1));
+// Renders run CLIP_RENDER_CONCURRENCY at a time (see jobProcessor.js), so
+// giving every single render all of the machine's cores would oversubscribe
+// the CPU and slow every render down together. Split the cores evenly
+// across the expected concurrency instead of hardcoding 1 thread — a real
+// speedup on any multi-core host, while still capping out safely on a
+// single-core box.
+const DEFAULT_RENDER_CONCURRENCY = Math.max(1, Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(4, os.cpus().length)));
+const CLIP_RENDER_THREADS = Math.max(
+  1,
+  Number(process.env.CLIP_RENDER_THREADS || Math.floor(os.cpus().length / DEFAULT_RENDER_CONCURRENCY))
+);
 const CLIP_AUDIO_BITRATE = process.env.CLIP_AUDIO_BITRATE || "64k";
 
 const CANVAS_WIDTH = Number(process.env.CLIP_WIDTH || 720);

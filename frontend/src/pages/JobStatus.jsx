@@ -93,7 +93,11 @@ export default function JobStatus() {
           {job.status !== "completed" && (
             <div className="progress-track">
               {STAGES.slice(0, -1).map((stage, i) => (
-                <div key={stage} className={`stage ${i <= stageIndex ? "done" : ""}`}>
+                <div
+                  key={stage}
+                  className={`stage ${i < stageIndex ? "done" : ""} ${i === stageIndex ? "active" : ""}`}
+                >
+                  {i === stageIndex && <span className="stage-dot" aria-hidden="true" />}
                   {stage}
                 </div>
               ))}

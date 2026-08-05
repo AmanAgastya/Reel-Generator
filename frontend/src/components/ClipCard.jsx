@@ -1,5 +1,5 @@
 import React from "react";
-import { clipDownloadUrl } from "../api/client.js";
+import { clipDownloadUrl, clipStreamUrl } from "../api/client.js";
 
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
@@ -8,14 +8,45 @@ function formatTime(seconds) {
 }
 
 export default function ClipCard({ jobId, clip, index }) {
+  const isRendered = clip.status === "rendered";
+
   return (
     <article className="clip-card generated-clip">
       <div className="clip-index">{String(index + 1).padStart(2, "0")}</div>
       <div className="clip-body">
+        {isRendered ? (
+          <div className="clip-player">
+            {/* preload="none" — with 10-20 clips per job, eagerly loading
+                every video at once would be slow and bandwidth-heavy.
+                Each player only fetches once the user hits play. */}
+            <video
+              className="clip-video"
+              controls
+              preload="none"
+              playsInline
+              poster=""
+              src={clipStreamUrl(jobId, clip._id)}
+            >
+              Your browser doesn't support inline video playback.
+            </video>
+          </div>
+        ) : (
+          <div className={`clip-player clip-player-placeholder ${clip.status}`}>
+            {clip.status === "failed" ? (
+              <span>Render failed</span>
+            ) : (
+              <>
+                <span className="spinner" aria-hidden="true" />
+                <span>Rendering&hellip;</span>
+              </>
+            )}
+          </div>
+        )}
+
         <div className="clip-badge-row">
           <div className="clip-badges">
             <span className="generated-badge">Generated</span>
-            <span className={`status-badge ${clip.status}`}>{clip.status === "rendered" ? "Ready" : clip.status}</span>
+            <span className={`status-badge ${clip.status}`}>{isRendered ? "Ready" : clip.status}</span>
           </div>
           <div className="clip-time">
             {formatTime(clip.startSeconds)} &ndash; {formatTime(clip.endSeconds)}
@@ -30,10 +61,9 @@ export default function ClipCard({ jobId, clip, index }) {
             </span>
           ))}
         </div>
-        <div className="clip-status">{clip.status}</div>
-        {clip.status === "rendered" && (
-          <a className="download" href={clipDownloadUrl(jobId, clip._id)}>
-            Download clip
+        {isRendered && (
+          <a className="download" href={clipDownloadUrl(jobId, clip._id)} download>
+            &darr; Download clip
           </a>
         )}
       </div>

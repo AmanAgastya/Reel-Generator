@@ -10,11 +10,14 @@ import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS || 1));
 // Each clip render is an independent ffmpeg encode of a short (15-60s)
-// segment. Use a modest parallelism default for faster runtime while
-// allowing environments with only one CPU to stay safe.
+// segment, so this is the biggest lever on total job time for jobs with
+// many clips. Default to using most of the machine's cores (capped at 4 so
+// a big box doesn't thrash on disk I/O) instead of the old hardcoded cap of
+// 2 — see CLIP_RENDER_THREADS in clipper.js, which is sized to divide the
+// remaining cores across these concurrent renders.
 const CLIP_RENDER_CONCURRENCY = Math.max(
   1,
-  Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(2, os.cpus().length))
+  Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(4, os.cpus().length))
 );
 const queuedJobIds = [];
 const activeJobIds = new Set();

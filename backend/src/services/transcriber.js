@@ -8,10 +8,14 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-small";
 const TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS = Math.max(60, Number(process.env.TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS || 1200));
 const TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES = Math.max(1, Number(process.env.TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES || 25 * 1024 * 1024));
-const TRANSCRIPTION_CHUNK_SECONDS = Math.max(600, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 1200));
-const TRANSCRIPTION_MIN_CHUNK_SECONDS = Math.max(300, Number(process.env.TRANSCRIPTION_MIN_CHUNK_SECONDS || 600));
-const MAX_TRANSCRIPTION_CHUNKS = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_CHUNKS || 2));
-const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 1));
+const TRANSCRIPTION_CHUNK_SECONDS = Math.max(300, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 600));
+const TRANSCRIPTION_MIN_CHUNK_SECONDS = Math.max(180, Number(process.env.TRANSCRIPTION_MIN_CHUNK_SECONDS || 300));
+// More, smaller chunks transcribed in parallel finish faster than a couple
+// of huge ones — Groq's Whisper endpoint is network/API-bound, not local
+// CPU-bound, so there's little cost to fanning a long video out into more
+// concurrent requests.
+const MAX_TRANSCRIPTION_CHUNKS = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_CHUNKS || 6));
+const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 4));
 const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 1));
 const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 3000);
 const AUDIO_EXTRACTION_THREADS = Math.max(1, Number(process.env.AUDIO_EXTRACTION_THREADS || 1));

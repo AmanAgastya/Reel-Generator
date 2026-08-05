@@ -15,7 +15,11 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 15% 0%, rgba(255, 181, 71, 0.07), transparent 40%),
+    radial-gradient(circle at 85% 20%, rgba(255, 181, 71, 0.05), transparent 35%),
+    var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font-family: 'Space Grotesk', system-ui, sans-serif;
 }
@@ -23,7 +27,69 @@ body {
 .page {
   max-width: 860px;
   margin: 0 auto;
-  padding: 64px 24px 96px;
+  padding: 40px 24px 96px;
+}
+
+.site-header {
+  border-bottom: 1px solid var(--line);
+  background: rgba(18, 20, 26, 0.75);
+  backdrop-filter: blur(10px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.site-header-inner {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+}
+
+.brand-mark {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--accent), #ff7a3d);
+  box-shadow: 0 0 0 3px rgba(255, 181, 71, 0.15);
+}
+
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #35d07f;
+  box-shadow: 0 0 0 0 rgba(53, 208, 127, 0.6);
+  animation: livePulse 2s ease-out infinite;
+}
+
+@keyframes livePulse {
+  0% { box-shadow: 0 0 0 0 rgba(53, 208, 127, 0.55); }
+  70% { box-shadow: 0 0 0 7px rgba(53, 208, 127, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(53, 208, 127, 0); }
 }
 
 .eyebrow {
@@ -57,6 +123,13 @@ body {
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 28px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
+  animation: panelIn 0.35s ease both;
+}
+
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .tabs { display: flex; gap: 8px; margin-bottom: 24px; }
@@ -71,7 +144,11 @@ body {
   font-family: 'IBM Plex Mono', monospace;
   font-size: 13px;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
 }
+
+.tab:hover { color: var(--text); border-color: #3a3f4e; }
+.tab:active { transform: scale(0.98); }
 
 .tab.active {
   background: var(--accent-dim);
@@ -101,6 +178,14 @@ body {
   background: #0f1116;
   color: var(--text);
   font-size: 15px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.field input[type="text"]:focus,
+.field input[type="url"]:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 3px rgba(255, 181, 71, 0.12);
 }
 
 .field.checkbox {
@@ -122,7 +207,15 @@ body {
   font-weight: 700;
   font-size: 15px;
   cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s ease, filter 0.15s ease;
 }
+
+.submit:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow: 0 8px 24px rgba(255, 181, 71, 0.25);
+}
+
+.submit:active:not(:disabled) { transform: scale(0.99); }
 
 .submit:disabled {
   background: var(--line);
@@ -172,9 +265,27 @@ body {
   border-radius: 6px;
   border: 1px solid var(--line);
   color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: color 0.2s ease, border-color 0.2s ease;
 }
 
 .stage.done { color: var(--accent); border-color: var(--accent-dim); }
+
+.stage.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(255, 181, 71, 0.08);
+}
+
+.stage-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: livePulse 1.4s ease-out infinite;
+}
 
 .progress-bar {
   width: 100%;
@@ -183,12 +294,28 @@ body {
   border-radius: 3px;
   overflow: hidden;
   margin-top: 12px;
+  position: relative;
 }
 
 .progress-fill {
   height: 100%;
-  background: var(--accent);
+  background: linear-gradient(90deg, var(--accent-dim), var(--accent));
   transition: width 0.4s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.progress-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  100% { transform: translateX(100%); }
 }
 
 .clip-grid {
@@ -208,6 +335,14 @@ body {
   gap: 14px;
   position: relative;
   overflow: hidden;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  animation: panelIn 0.3s ease both;
+}
+
+.clip-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.28);
+  border-color: rgba(255, 181, 71, 0.4);
 }
 
 .clip-card::before {
@@ -379,4 +514,60 @@ body {
   padding: 8px 12px;
   border-radius: 10px;
   font-weight: 700;
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+
+.download:hover { filter: brightness(1.08); }
+.download:active { transform: scale(0.98); }
+
+.clip-player {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  max-height: 320px;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 14px;
+  background: #000;
+  border: 1px solid rgba(255, 181, 71, 0.18);
+}
+
+.clip-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+
+.clip-player-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.02),
+    rgba(255, 255, 255, 0.02) 10px,
+    rgba(255, 255, 255, 0.04) 10px,
+    rgba(255, 255, 255, 0.04) 20px
+  );
+}
+
+.clip-player-placeholder.failed { color: var(--danger); }
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 181, 71, 0.25);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }

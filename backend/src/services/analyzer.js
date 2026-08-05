@@ -12,8 +12,14 @@ const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER
 const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 2));
 const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 2000);
 const ANALYSIS_MIN_INTERVAL_MS = Number(process.env.ANALYSIS_MIN_INTERVAL_MS || 8000);
-// Transcript chunks are analyzed conservatively to stay under Groq TPM limits.
-const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 1));
+// Transcript chunks are analyzed in parallel. Most jobs only produce a
+// handful of chunks, so a default of 1 (the old behavior) meant every extra
+// chunk added a full LLM round-trip *plus* an 8s artificial delay
+// sequentially — by far the slowest part of the "analyzing" stage for
+// longer videos. 4 concurrent requests stays comfortably under Groq's TPM
+// limits for typical transcript chunk sizes while cutting that stage's
+// time roughly 4x; lower this back to 1 if you're on a low-tier Groq key.
+const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 4));
 
 function buildTranscriptLines(segments) {
   return segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);
