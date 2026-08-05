@@ -6,6 +6,7 @@ const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-small";
 
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
+const MIN_CLIPS_PER_JOB = Number(process.env.MIN_CLIPS_PER_JOB || 8);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
 const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 42000);
 const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 15);
@@ -155,7 +156,7 @@ function normalizeClips(clips, ownerCreditName) {
     .slice(0, MAX_CLIPS_PER_JOB)
     .map((clip) => ({
       ...clip,
-      caption: clip.caption || "Key moment from this video",
+      caption: clip.caption || "",
       hashtags: Array.isArray(clip.hashtags) ? clip.hashtags : [],
       rankScore: Number.isFinite(clip.rankScore) ? clip.rankScore : 0.5,
       creditLine: `Original video by ${ownerCreditName}`,
@@ -256,9 +257,12 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
     throw new Error(`Video is too short to create a ${MIN_CLIP_SECONDS}-second clip.`);
   }
 
+  const possibleClipCount = Math.max(1, Math.floor(videoDuration / MIN_CLIP_SECONDS));
   const requestedClipCount = Math.min(
     MAX_CLIPS_PER_JOB,
-    Math.max(1, Math.floor(videoDuration / MIN_CLIP_SECONDS))
+    videoDuration >= MIN_CLIP_SECONDS * MIN_CLIPS_PER_JOB
+      ? Math.max(MIN_CLIPS_PER_JOB, possibleClipCount)
+      : possibleClipCount
   );
 
   const transcriptLines = buildTranscriptLines(segments);
@@ -314,7 +318,7 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
     {
       start: videoStart,
       end: Math.min(videoStart + MAX_CLIP_SECONDS, videoEnd),
-      caption: "Key moment from this video",
+      caption: "",
       hashtags: [],
       rankScore: 0.1,
       creditLine: `Original video by ${ownerCreditName}`,

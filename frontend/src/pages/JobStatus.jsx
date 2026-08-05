@@ -65,7 +65,7 @@ export default function JobStatus() {
 
   const stageIndex = STAGES.indexOf(job.status);
   const renderedCount = clips.filter((clip) => clip.status === "rendered").length;
-  const totalClips = clips.length;
+  const totalClips = job.clipRenderCount || clips.length;
 
   return (
     <div className="page">

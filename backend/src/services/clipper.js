@@ -284,7 +284,7 @@ function truncate(text, maxLength) {
  * version drew captions as a single unwrapped line).
  */
 function wrapCaption(rawCaption, { maxFontSize, minFontSize }) {
-  const caption = truncate(String(rawCaption || "").trim(), 140) || "Key moment from this video";
+  const caption = truncate(String(rawCaption || "").trim(), 140);
   const sidePadding = 90;
   const safeWidth = CANVAS_WIDTH - sidePadding * 2;
   const maxLines = 4;
