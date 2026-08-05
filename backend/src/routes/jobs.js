@@ -8,7 +8,7 @@ import { upload, uploadChunk } from "../middleware/upload.js";
 import { enqueueJob } from "../workers/jobProcessor.js";
 
 const router = express.Router();
-const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
+const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
 const CHUNK_ROOT = path.join(STORAGE_DIR, "uploads", ".chunks");
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);

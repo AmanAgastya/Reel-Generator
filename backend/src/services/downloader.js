@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs";
 import { v4 as uuid } from "uuid";
 
-const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
+const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
 
 /**
  * Downloads a YouTube video to local disk.

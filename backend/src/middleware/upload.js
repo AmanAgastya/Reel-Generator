@@ -2,7 +2,7 @@ import multer from "multer";
 import path from "path";
 import fs from "fs";
 
-const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
+const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
 const uploadDir = path.join(STORAGE_DIR, "uploads");
 const chunkDir = path.join(uploadDir, ".chunks");
 fs.mkdirSync(uploadDir, { recursive: true });

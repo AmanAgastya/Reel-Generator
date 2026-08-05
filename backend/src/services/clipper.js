@@ -4,7 +4,7 @@ import fs from "fs";
 import os from "os";
 import { v4 as uuid } from "uuid";
 
-const STORAGE_DIR = process.env.STORAGE_DIR || "./storage";
+const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
 
 // "ultrafast" trades a little compression efficiency for the fastest
 // possible encode — worth it since clips are short (15-60s) and total job
