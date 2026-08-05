@@ -25,6 +25,9 @@ const MAX_TRANSCRIPTION_CHUNKS = Math.max(1, Number(process.env.MAX_TRANSCRIPTIO
 const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 4));
 const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 1));
 const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 3000);
+const TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS = Number(
+  process.env.TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS || 30
+);
 const AUDIO_EXTRACTION_THREADS = Math.max(1, Number(process.env.AUDIO_EXTRACTION_THREADS || 1));
 const AUDIO_BITRATE = process.env.AUDIO_BITRATE || "16k";
 
@@ -204,8 +207,27 @@ async function retryTranscriptionChunk(audioPath) {
     } catch (error) {
       lastError = error;
       const message = String(error?.message || "").toLowerCase();
+      const isRateLimit = message.includes("rate limit");
+
+      if (isRateLimit) {
+        const wait = parseRateLimitWaitSeconds(message);
+        // A multi-minute+ wait almost always means a daily/plan quota, not
+        // a transient per-minute limit - fail fast instead of blocking the
+        // job for a long time on a retry that can't possibly succeed yet.
+        if (wait !== undefined && wait > TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS) {
+          throw Object.assign(
+            new Error(
+              `Groq's quota for "${WHISPER_MODEL}" transcription is exhausted. It resets in about ` +
+                `${formatDuration(wait)}. Try again after that, or upgrade your Groq plan at ` +
+                `https://console.groq.com/settings/billing.`
+            ),
+            { isQuotaExhausted: true, cause: error }
+          );
+        }
+      }
+
       if (attempt === MAX_TRANSCRIPTION_RETRIES) break;
-      if (message.includes("rate limit")) {
+      if (isRateLimit) {
         const wait = parseRateLimitWaitSeconds(message) || TRANSCRIPTION_RETRY_DELAY_MS / 1000;
         console.warn(`[transcriber] rate limit hit, waiting ${wait}s before retrying...`);
         await new Promise((resolve) => setTimeout(resolve, wait * 1000));
@@ -219,8 +241,28 @@ async function retryTranscriptionChunk(audioPath) {
 }
 
 function parseRateLimitWaitSeconds(message) {
-  const match = message.match(/please try again in (\d+(?:\.\d+)?)s/i);
-  return match ? Number(match[1]) : undefined;
+  // See the matching comment in analyzer.js: Groq formats longer waits
+  // (daily/plan quota resets) as compound durations like "1h18m11.52s",
+  // not the bare-seconds form the old regex here only handled.
+  const match = message.match(/please try again in ((?:\d+h)?(?:\d+m(?!s))?(?:\d+(?:\.\d+)?s)?)/i);
+  if (!match || !match[1]) return undefined;
+  const duration = match[1];
+  const hours = Number(duration.match(/(\d+)h/)?.[1] || 0);
+  const minutes = Number(duration.match(/(\d+)m(?!s)/)?.[1] || 0);
+  const seconds = Number(duration.match(/(\d+(?:\.\d+)?)s/)?.[1] || 0);
+  const total = hours * 3600 + minutes * 60 + seconds;
+  return total > 0 ? total : undefined;
+}
+
+function formatDuration(totalSeconds) {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  const parts = [];
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (seconds || !parts.length) parts.push(`${seconds}s`);
+  return parts.join(" ");
 }
 
 function isRecoverableTranscriptionError(error) {

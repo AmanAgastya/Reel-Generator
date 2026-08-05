@@ -15,7 +15,12 @@ const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
 // analyzeBestMoments below), it never overshoots MAX_CLIPS_PER_JOB.
 const MIN_CLIPS_PER_JOB = Number(process.env.MIN_CLIPS_PER_JOB || 8);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 30);
-const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 18000);
+// Smaller chunks use fewer tokens per Groq request (roughly half of the
+// old 18000-char default) and produce more, finer-grained chunks for a
+// given transcript - both stretch a limited daily token budget (Groq's
+// free tier is 100k tokens/day) further and give selectDistributedClips
+// more distinct chunks to spread MAX_CLIPS_PER_JOB clips across.
+const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 9000);
 // Needs enough headroom to still hit MAX_CLIPS_PER_JOB even when a video's
 // whole transcript fits in a single chunk (short/medium videos). Kept equal
 // to MAX_CLIPS_PER_JOB so a single-chunk transcript is never the bottleneck.
@@ -23,6 +28,12 @@ const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER
 const CHUNK_OVERLAP_LINES = Number(process.env.CHUNK_OVERLAP_LINES || 3);
 const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 2));
 const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 2000);
+// If Groq reports a rate-limit reset longer than this, it's almost always
+// a daily/monthly token quota (not a transient per-minute limit) - waiting
+// it out inline would block the job for potentially over an hour with no
+// chance of success. Fail that chunk immediately with a clear error
+// instead of silently burning the retry budget on a wait that can't work.
+const ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS = Number(process.env.ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS || 30);
 const ANALYSIS_MIN_INTERVAL_MS = Number(process.env.ANALYSIS_MIN_INTERVAL_MS || 8000);
 // Transcript chunks are analyzed in parallel. Most jobs only produce a
 // handful of chunks, so a default of 1 (the old behavior) meant every extra
@@ -136,8 +147,24 @@ async function retryAnalysisRequest(fn) {
     } catch (error) {
       lastError = error;
       const message = String(error?.message || "").toLowerCase();
+      const isRateLimit = message.includes("rate limit");
+
+      if (isRateLimit) {
+        const wait = parseRateLimitWaitSeconds(message);
+        if (wait !== undefined && wait > ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS) {
+          throw Object.assign(
+            new Error(
+              `Groq's token quota for "${ANALYSIS_MODEL}" is exhausted (this is usually the free tier's ` +
+                `100k-tokens/day cap). It resets in about ${formatDuration(wait)}. Try again after that, or ` +
+                `upgrade your Groq plan at https://console.groq.com/settings/billing.`
+            ),
+            { isQuotaExhausted: true, cause: error }
+          );
+        }
+      }
+
       if (attempt === MAX_ANALYSIS_RETRIES) break;
-      if (message.includes("rate limit")) {
+      if (isRateLimit) {
         const wait = parseRateLimitWaitSeconds(message) || ANALYSIS_RETRY_DELAY_MS / 1000;
         console.warn(`[analyzer] rate limit hit, waiting ${wait}s before retrying...`);
         await delay(wait * 1000);
@@ -150,9 +177,33 @@ async function retryAnalysisRequest(fn) {
   throw lastError;
 }
 
+// Groq formats rate-limit reset times as compound durations - a bare
+// "4.2s" for short per-minute limits, but "1h18m11.52s" style for the
+// much longer waits that come with a daily/monthly quota. The previous
+// version of this regex only matched the bare-seconds form, so any longer
+// wait silently fell through to `undefined` and the caller defaulted to a
+// pointless 2-second retry delay that could never succeed against an
+// exhausted daily quota.
 function parseRateLimitWaitSeconds(message) {
-  const match = message.match(/please try again in (\d+(?:\.\d+)?)s/i);
-  return match ? Number(match[1]) : undefined;
+  const match = message.match(/please try again in ((?:\d+h)?(?:\d+m(?!s))?(?:\d+(?:\.\d+)?s)?)/i);
+  if (!match || !match[1]) return undefined;
+  const duration = match[1];
+  const hours = Number(duration.match(/(\d+)h/)?.[1] || 0);
+  const minutes = Number(duration.match(/(\d+)m(?!s)/)?.[1] || 0);
+  const seconds = Number(duration.match(/(\d+(?:\.\d+)?)s/)?.[1] || 0);
+  const total = hours * 3600 + minutes * 60 + seconds;
+  return total > 0 ? total : undefined;
+}
+
+function formatDuration(totalSeconds) {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  const parts = [];
+  if (hours) parts.push(`${hours}h`);
+  if (minutes) parts.push(`${minutes}m`);
+  if (seconds || !parts.length) parts.push(`${seconds}s`);
+  return parts.join(" ");
 }
 
 function delay(ms) {
@@ -284,6 +335,11 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
   const fullTranscript = transcriptLines.join("\n");
   const transcriptChunks = fullTranscript.length <= MAX_ANALYSIS_CHARS ? [fullTranscript] : chunkTranscript(transcriptLines);
 
+  // Tracks whether any chunk failed specifically because Groq's token quota
+  // is exhausted (as opposed to a transient error) - see the check after
+  // chunkResults below.
+  let quotaExhaustedError = null;
+
   // Chunks are analyzed concurrently (was: sequential await in a for loop,
   // which meant a 4-chunk transcript took 4x as long as it needed to).
   let chunkResults;
@@ -299,6 +355,7 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
         chunkResults.push(chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK));
       } catch (error) {
         console.error("[analyzer] chunk analysis failed:", error);
+        if (error?.isQuotaExhausted) quotaExhaustedError = error;
         chunkResults.push([]);
       }
       if (chunkIndex < transcriptChunks.length - 1) {
@@ -315,6 +372,7 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
           return chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK);
         } catch (error) {
           console.error("[analyzer] chunk analysis failed:", error);
+          if (error?.isQuotaExhausted) quotaExhaustedError = error;
           return [];
         }
       }
@@ -326,6 +384,15 @@ export async function analyzeBestMoments(transcript, { ownerCreditName }) {
     selectDistributedClips(candidateClips, requestedClipCount),
     ownerCreditName
   );
+
+  // If a chunk hit an exhausted token quota AND that left us with fewer
+  // clips than the job should have, surface the real reason as a failed
+  // job instead of silently completing with a handful of clips and no
+  // explanation - that's what produced a confusing "only 2 clips" result
+  // with no visible error.
+  if (quotaExhaustedError && rankedClips.length < MIN_CLIPS_PER_JOB) {
+    throw quotaExhaustedError;
+  }
 
   if (rankedClips.length) return rankedClips;
 
