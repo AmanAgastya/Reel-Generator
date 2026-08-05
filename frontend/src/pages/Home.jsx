@@ -60,6 +60,11 @@ export default function Home() {
           moments, writes captions, credits you, and hands back vertical clips
           ready to post.
         </p>
+        <div className="hero-stickers" aria-hidden="true">
+          <span className="sticker" style={{ "--r": "-3deg", "--d": "0s" }}>AI cut</span>
+          <span className="sticker" style={{ "--r": "2deg", "--d": "0.3s" }}>9:16 ready</span>
+          <span className="sticker" style={{ "--r": "-2deg", "--d": "0.6s" }}>Auto captions</span>
+        </div>
       </header>
 
       <form className="panel" onSubmit={handleSubmit}>

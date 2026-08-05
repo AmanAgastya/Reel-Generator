@@ -73,7 +73,7 @@ export default function JobStatus() {
         &larr; New video
       </Link>
 
-      <header className="hero small">
+      <header className={`hero small ${job.status === "completed" ? "just-wrapped" : ""}`}>
         <span className="eyebrow">Job {job._id.slice(-6)}</span>
         <h1>
           {job.status === "completed"
@@ -91,16 +91,20 @@ export default function JobStatus() {
       ) : (
         <>
           {job.status !== "completed" && (
-            <div className="progress-track">
-              {STAGES.slice(0, -1).map((stage, i) => (
-                <div
-                  key={stage}
-                  className={`stage ${i < stageIndex ? "done" : ""} ${i === stageIndex ? "active" : ""}`}
-                >
-                  {i === stageIndex && <span className="stage-dot" aria-hidden="true" />}
-                  {stage}
-                </div>
-              ))}
+            <div className="filmstrip">
+              <div className="filmstrip-holes" aria-hidden="true" />
+              <div className="filmstrip-frames">
+                {STAGES.slice(0, -1).map((stage, i) => (
+                  <div
+                    key={stage}
+                    className={`frame ${i < stageIndex ? "done" : ""} ${i === stageIndex ? "active" : ""}`}
+                  >
+                    <span className="frame-num">{String(i + 1).padStart(2, "0")}</span>
+                    <span className="frame-label">{stage}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="filmstrip-holes" aria-hidden="true" />
               <div className="progress-bar">
                 <div className="progress-fill" style={{ width: `${job.progress}%` }} />
               </div>
@@ -108,7 +112,7 @@ export default function JobStatus() {
           )}
 
           {job.startedAt && job.status !== "queued" && (
-            <p className="sub">Started {formatElapsedTime(job.startedAt)} ago.</p>
+            <p className="sub timing">Started {formatElapsedTime(job.startedAt)} ago.</p>
           )}
 
           {job.status === "clipping" && (

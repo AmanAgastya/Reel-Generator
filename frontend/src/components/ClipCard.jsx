@@ -12,23 +12,25 @@ export default function ClipCard({ jobId, clip, index }) {
 
   return (
     <article className="clip-card generated-clip">
-      <div className="clip-index">{String(index + 1).padStart(2, "0")}</div>
+      <div className="clip-index">Frame {String(index + 1).padStart(2, "0")}</div>
       <div className="clip-body">
         {isRendered ? (
-          <div className="clip-player">
-            {/* preload="none" — with 10-20 clips per job, eagerly loading
-                every video at once would be slow and bandwidth-heavy.
-                Each player only fetches once the user hits play. */}
-            <video
-              className="clip-video"
-              controls
-              preload="none"
-              playsInline
-              poster=""
-              src={clipStreamUrl(jobId, clip._id)}
-            >
-              Your browser doesn't support inline video playback.
-            </video>
+          <div className="phone-frame">
+            <div className="phone-notch" aria-hidden="true" />
+            <div className="clip-player">
+              {/* preload="none" — with 10-20 clips per job, eagerly loading
+                  every video at once would be slow and bandwidth-heavy.
+                  Each player only fetches once the user hits play. */}
+              <video
+                className="clip-video"
+                controls
+                preload="none"
+                playsInline
+                src={clipStreamUrl(jobId, clip._id)}
+              >
+                Your browser doesn't support inline video playback.
+              </video>
+            </div>
           </div>
         ) : (
           <div className={`clip-player clip-player-placeholder ${clip.status}`}>
