@@ -13,6 +13,7 @@ export default function ClipCard({ jobId, clip, index }) {
   const [hashtags, setHashtags] = useState(clip.hashtags || []);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setCaption(clip.caption);
@@ -33,6 +34,19 @@ export default function ClipCard({ jobId, clip, index }) {
     }
   }
 
+  async function handleCopyCaption() {
+    const postText = [caption, hashtags.map((tag) => `#${tag}`).join(" ")]
+      .filter(Boolean)
+      .join("\n\n");
+    try {
+      await navigator.clipboard.writeText(postText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("Couldn't copy to clipboard — select and copy the caption manually.");
+    }
+  }
+
   return (
     <article className="clip-card generated-clip">
       <div className="clip-index">Frame {String(index + 1).padStart(2, "0")}</div>
@@ -41,7 +55,7 @@ export default function ClipCard({ jobId, clip, index }) {
           <div className="phone-frame">
             <div className="phone-notch" aria-hidden="true" />
             <div className="clip-player">
-              {/* preload="none" — with 10-20 clips per job, eagerly loading
+              {/* preload="none" — with up to 30 clips per job, eagerly loading
                   every video at once would be slow and bandwidth-heavy.
                   Each player only fetches once the user hits play. */}
               <video
@@ -78,6 +92,14 @@ export default function ClipCard({ jobId, clip, index }) {
           </div>
         </div>
         <p className="clip-credit">{clip.creditLine}</p>
+
+        {/* Nothing is burned into the video frame — this is the caption to
+            paste into the post text when you publish the clip. */}
+        <div className="clip-caption-block">
+          <p className="clip-caption-label">Caption for posting</p>
+          <p className="clip-caption-text">{caption || "No caption generated for this clip yet."}</p>
+        </div>
+
         <div className="clip-hashtags">
           {hashtags.map((tag) => (
             <span key={tag} className="hashtag">
@@ -90,6 +112,9 @@ export default function ClipCard({ jobId, clip, index }) {
             <a className="download" href={clipDownloadUrl(jobId, clip._id)} download>
               &darr; Download clip
             </a>
+            <button type="button" className="copy-caption" onClick={handleCopyCaption} disabled={!caption}>
+              {copied ? "Copied!" : "Copy caption"}
+            </button>
             <button
               type="button"
               className="regenerate"

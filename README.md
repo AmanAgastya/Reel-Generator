@@ -34,22 +34,18 @@ If you later want to extend this to other creators' content, the only safe paths
 - the source video is split into a **background** (cover-cropped, blurred,
   darkened) and a **foreground** (scaled to fit the full frame with
   nothing cut off — landscape, portrait, and square sources all work)
-- the foreground is centered over the background and framed with a thin
-  border
-- soft gradient scrims sit behind the credit line (top) and caption
-  (bottom) so text stays legible over any footage
-- the caption is word-wrapped (up to 4 lines, adaptive font size) and
-  drawn with a drop shadow; both caption and credit line are written to
-  temp `.txt` files and passed via ffmpeg's `textfile=`, not inlined as
-  `text=`, so punctuation in LLM-generated captions (commas, colons,
-  quotes, `%`) can't corrupt the filter graph
-- `CLIP_WIDTH` / `CLIP_HEIGHT` / `CLIP_ACCENT_COLOR` / `FONT_PATH` /
-  `CLIP_VIDEO_PRESET` / `CLIP_VIDEO_CRF` in `.env` control the look (see
-  `.env.example`)
-- rendering burns in captions with ffmpeg's `drawtext`, which needs an
-  actual font file on disk — the Docker image installs
-  `fonts-dejavu-core` for this; if you run the backend outside Docker on a
-  machine with no fonts installed, set `FONT_PATH` to a `.ttf` file
+- the foreground is centered over the background, filling the vertical
+  9:16 canvas
+- **nothing else is drawn into the frame** — no title, caption, credit
+  line, border, or scrim is burned into the video. The clip file itself is
+  just the source footage, reframed.
+- `CLIP_WIDTH` / `CLIP_HEIGHT` / `CLIP_VIDEO_PRESET` / `CLIP_VIDEO_CRF` in
+  `.env` control the look (see `.env.example`)
+- captions and hashtags are still generated per clip by the analyzer (see
+  below) and returned as metadata on each `Clip` document — surfaced in
+  the UI as "Caption for posting" (with a copy button) for you to paste
+  into the post text when you publish the clip, not composited onto the
+  video itself
 
 ## Project layout
 
@@ -64,7 +60,7 @@ backend/
     services/downloader.js   yt-dlp wrapper
     services/transcriber.js  Whisper transcription
     services/analyzer.js     LLM best-moment detection + caption/hashtag generation
-    services/clipper.js      ffmpeg cutting + caption burn-in
+    services/clipper.js      ffmpeg cutting + vertical reframing (no text burn-in)
     workers/jobProcessor.js  Orchestrates the full pipeline per job
     middleware/upload.js     multer config for direct file uploads
 frontend/

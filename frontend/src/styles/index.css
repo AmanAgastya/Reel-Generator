@@ -531,6 +531,25 @@ body::after {
 .clip-caption { font-size: 16px; margin: 0 0 6px; line-height: 1.4; color: #ffffff; }
 .clip-credit { font-size: 12px; color: #b9b5a5; margin: 0 0 10px; }
 
+.clip-caption-block {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.clip-caption-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #b9b5a5;
+  margin: 0 0 4px;
+}
+
+.clip-caption-text { font-size: 15px; line-height: 1.4; color: #ffffff; margin: 0; }
+
 .clip-hashtags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
 
 .clip-actions {
@@ -542,6 +561,7 @@ body::after {
 }
 
 .clip-actions .download,
+.clip-actions .copy-caption,
 .clip-actions .regenerate {
   display: inline-flex;
   align-items: center;
@@ -558,12 +578,14 @@ body::after {
   color: #ffffff;
 }
 
+.clip-actions .copy-caption,
 .clip-actions .regenerate {
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: transparent;
   color: #ffffff;
 }
 
+.clip-actions .copy-caption:disabled,
 .clip-actions .regenerate:disabled {
   opacity: 0.5;
   cursor: not-allowed;

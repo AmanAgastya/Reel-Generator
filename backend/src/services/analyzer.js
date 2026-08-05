@@ -2,14 +2,24 @@ import Groq from "groq-sdk";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-small";
+// NOTE: "llama-3.3-small" is not a real Groq model id and was causing every
+// analysis call to fail whenever GROQ_ANALYSIS_MODEL wasn't explicitly set.
+// Default to the same model documented in .env.example.
+const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-70b-versatile";
 
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
+// Every job should produce at least 8 clips and, for longer source videos,
+// as many as 30 — the analyzer scales the actual requested count between
+// these two bounds based on the source video's duration (see
+// analyzeBestMoments below), it never overshoots MAX_CLIPS_PER_JOB.
 const MIN_CLIPS_PER_JOB = Number(process.env.MIN_CLIPS_PER_JOB || 8);
-const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 20);
+const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 30);
 const MAX_ANALYSIS_CHARS = Number(process.env.MAX_ANALYSIS_CHARS || 18000);
-const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 20);
+// Needs enough headroom to still hit MAX_CLIPS_PER_JOB even when a video's
+// whole transcript fits in a single chunk (short/medium videos). Kept equal
+// to MAX_CLIPS_PER_JOB so a single-chunk transcript is never the bottleneck.
+const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER_CHUNK || 30);
 const CHUNK_OVERLAP_LINES = Number(process.env.CHUNK_OVERLAP_LINES || 3);
 const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 2));
 const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 2000);

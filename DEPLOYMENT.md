@@ -85,7 +85,7 @@ git push -u origin main
    `GROQ_WHISPER_MODEL=whisper-large-v3`, `GROQ_ANALYSIS_MODEL=llama-3.3-70b-versatile`,
    `CLIENT_ORIGIN`, `MONGO_MAX_POOL_SIZE=10`, `MONGO_MIN_POOL_SIZE=2`,
    `MONGO_MAX_RETRIES=8`, `MONGO_RETRY_DELAY_MS=5000`, `MIN_CLIP_SECONDS=15`,
-   `MAX_CLIP_SECONDS=60`, `MAX_CLIPS_PER_JOB=20`.
+   `MAX_CLIP_SECONDS=60`, `MIN_CLIPS_PER_JOB=8`, `MAX_CLIPS_PER_JOB=30`.
 7. Deploy. Once live, note the URL Render gives you, e.g.
    `https://reel-generator-backend.onrender.com`.
 8. Sanity check: visit `https://<your-backend>.onrender.com/api/health` — it
