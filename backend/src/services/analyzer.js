@@ -1,9 +1,8 @@
-import Groq from "groq-sdk";
 import ffmpeg from "fluent-ffmpeg";
 import os from "os";
 import { mapWithConcurrency } from "../utils/concurrency.js";
+import { getGroqClient } from "../utils/groqKeyPool.js";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 // NOTE: "llama-3.3-small" is not a real Groq model id and was causing every
 // analysis call to fail whenever GROQ_ANALYSIS_MODEL wasn't explicitly set.
 // Default to the same model documented in .env.example.
@@ -118,8 +117,12 @@ Respond ONLY with JSON, no prose, in this exact shape:
     // budget with maxClips instead of using a fixed value.
     const maxTokensForChunk = Math.min(6000, 300 + maxClips * 110);
 
+    // Each transcript chunk is assigned to a Groq client by its chunk
+    // index (see getGroqClient) - with multiple GROQ_API_KEYS configured,
+    // this is what actually splits the analysis work across keys instead
+    // of every chunk competing for one key's rate limit/token quota.
     const completion = await retryAnalysisRequest(() =>
-      groq.chat.completions.create({
+      getGroqClient(chunkIndex).chat.completions.create({
         model: ANALYSIS_MODEL,
         messages: [
           { role: "system", content: chunkPrompt },
@@ -363,8 +366,10 @@ Respond ONLY with JSON in this exact shape:
 Transcript:
 ${clipTranscript}`;
 
+  // Single one-off call (not part of a chunk list) - round-robins across
+  // configured keys via getGroqClient() with no index.
   const completion = await retryAnalysisRequest(() =>
-    groq.chat.completions.create({
+    getGroqClient().chat.completions.create({
       model: ANALYSIS_MODEL,
       messages: [{ role: "system", content: prompt }],
       response_format: { type: "json_object" },

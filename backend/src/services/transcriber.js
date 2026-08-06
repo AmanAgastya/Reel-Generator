@@ -1,10 +1,10 @@
+
 import fs from "fs";
 import path from "path";
 import { v4 as uuid } from "uuid";
 import ffmpeg from "fluent-ffmpeg";
-import Groq from "groq-sdk";
+import { getGroqClient } from "../utils/groqKeyPool.js";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 // NOTE: "whisper-small" is not a valid Groq model id and was causing every
 // transcription call to fail whenever GROQ_WHISPER_MODEL wasn't explicitly
 // set. Default to the same model documented in .env.example.
@@ -87,12 +87,16 @@ export async function transcribeVideo(filePath, onProgress = async () => {}) {
 async function transcribeVideoRange(videoPath, chunkRoot, start, duration, index) {
   const chunkPath = path.join(chunkRoot, `${String(index).padStart(4, "0")}.mp3`);
   await extractAudioChunk(videoPath, chunkPath, start, duration);
-  return await transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, chunkPath);
+  return await transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, chunkPath, index);
 }
 
-async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, audioPath) {
+async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, audioPath, index) {
   try {
-    const response = await retryTranscriptionChunk(audioPath);
+    // Each chunk is assigned to a Groq client by its chunk index (see
+    // getGroqClient) - with multiple GROQ_API_KEYS configured, this is
+    // what actually splits transcription work across keys instead of
+    // every chunk competing for one key's rate limit/quota.
+    const response = await retryTranscriptionChunk(audioPath, index);
     return parseTranscriptionResponse(response, start);
   } catch (error) {
     const message = String(error?.message || "").toLowerCase();
@@ -108,7 +112,7 @@ async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, durati
 }
 
 async function transcribeFullAudio(audioPath, offset) {
-  const response = await retryTranscriptionChunk(audioPath);
+  const response = await retryTranscriptionChunk(audioPath, 0);
   return parseTranscriptionResponse(response, offset);
 }
 
@@ -205,11 +209,11 @@ function extractAudioChunk(videoPath, outputPath, start, duration) {
   });
 }
 
-async function retryTranscriptionChunk(audioPath) {
+async function retryTranscriptionChunk(audioPath, index) {
   let lastError;
   for (let attempt = 1; attempt <= MAX_TRANSCRIPTION_RETRIES; attempt += 1) {
     try {
-      return await groq.audio.transcriptions.create({
+      return await getGroqClient(index).audio.transcriptions.create({
         file: fs.createReadStream(audioPath),
         model: WHISPER_MODEL,
         response_format: "verbose_json",
