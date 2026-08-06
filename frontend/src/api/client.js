@@ -38,6 +38,17 @@ const CHUNK_MAX_RETRIES = 4;
 // waiting on a connection that isn't coming back. The timer resets on every
 // progress event, so a genuinely slow-but-moving upload is never killed.
 const CHUNK_STALL_TIMEOUT_MS = 20000;
+// Covers a full server restart mid-upload (Render redeploy, container
+// restart, OOM, etc - visible in the logs as "Detected service running on
+// port 5000" appearing again partway through). That drops every in-flight
+// chunk request at once with no response at all, which the per-chunk
+// retries above (a few seconds apart) aren't long enough to ride out - a
+// container typically takes 30-90s to come back up. Because the upload
+// session is resumable (see /uploads/init), the right response to that is
+// to wait for the server to come back and continue from the last
+// successfully-saved chunk, not to fail the whole upload.
+const SESSION_MAX_RETRIES = 6;
+const SESSION_RETRY_DELAY_MS = 10000;
 
 client.interceptors.response.use(
   (response) => response,
@@ -74,7 +85,31 @@ export async function createJobFromUpload({ file, ownershipConfirmed, ownerCredi
   if (file.size <= CHUNK_SIZE_HINT) {
     return uploadWholeFile({ file, ownershipConfirmed, ownerCreditName, onProgress });
   }
-  return uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, onProgress });
+  return uploadFileInChunksWithSessionRetry({ file, ownershipConfirmed, ownerCreditName, onProgress });
+}
+
+async function uploadFileInChunksWithSessionRetry(params) {
+  let lastError;
+  for (let attempt = 1; attempt <= SESSION_MAX_RETRIES; attempt += 1) {
+    try {
+      return await uploadFileInChunks(params);
+    } catch (error) {
+      lastError = error;
+      // Only retry the session for a dropped connection (no response came
+      // back at all - a restart, a network blip, our own stall-abort). A
+      // response that DID come back with a 4xx (bad request, session not
+      // found, file too large) is a real, permanent problem - retrying
+      // won't fix it, so surface it immediately instead of silently
+      // retrying for a minute.
+      if (error.response || attempt === SESSION_MAX_RETRIES) break;
+      console.warn(
+        `[upload] session interrupted (attempt ${attempt}/${SESSION_MAX_RETRIES}), ` +
+          `retrying in ${SESSION_RETRY_DELAY_MS / 1000}s - the server may be restarting...`
+      );
+      await new Promise((resolve) => setTimeout(resolve, SESSION_RETRY_DELAY_MS));
+    }
+  }
+  throw lastError;
 }
 
 async function uploadWholeFile({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
