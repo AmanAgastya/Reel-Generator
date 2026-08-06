@@ -23,7 +23,14 @@ export const MAX_UPLOAD_FILE_SIZE = Number(process.env.MAX_UPLOAD_FILE_SIZE || 5
 // chunk only has to retry itself, not the whole file. Exported so
 // routes/jobs.js can compute the expected chunk count for a given file
 // size — must match the frontend's CHUNK_SIZE (see frontend/src/api/client.js).
-export const CHUNK_SIZE = Number(process.env.UPLOAD_CHUNK_SIZE || 16 * 1024 * 1024);
+export const CHUNK_SIZE = Number(process.env.UPLOAD_CHUNK_SIZE || 32 * 1024 * 1024);
+
+// The frontend now reads CHUNK_SIZE from the /uploads/init response instead
+// of hardcoding its own copy (see frontend/src/api/client.js), so the two
+// can no longer drift apart. This margin is just extra insurance against
+// multipart/stream-boundary edge cases so a legitimately-sized chunk is
+// never rejected right at the limit.
+const CHUNK_SIZE_MARGIN = 1 * 1024 * 1024; // 1MB
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
@@ -44,5 +51,9 @@ export const upload = multer({
 
 export const uploadChunk = multer({
   dest: chunkDir,
-  limits: { fileSize: CHUNK_SIZE },
+  // Give multer's own limiter some headroom above the nominal CHUNK_SIZE;
+  // the route handler below still enforces the exact CHUNK_SIZE against
+  // the file it actually receives, so this can't be used to smuggle an
+  // oversized chunk through.
+  limits: { fileSize: CHUNK_SIZE + CHUNK_SIZE_MARGIN },
 });

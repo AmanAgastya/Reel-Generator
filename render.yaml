@@ -27,7 +27,7 @@ services:
       - key: MAX_UPLOAD_FILE_SIZE
         value: "5368709120" # 5GB — uploads are never compressed
       - key: UPLOAD_CHUNK_SIZE
-        value: "16777216" # 16MB — must match frontend CHUNK_SIZE
+        value: "33554432" # 32MB — frontend reads this from /uploads/init, no need to change it there too
       - key: CLIENT_ORIGIN
         # Origins do not include a trailing slash. A trailing slash causes the
         # browser's Origin header to fail the exact CORS match.

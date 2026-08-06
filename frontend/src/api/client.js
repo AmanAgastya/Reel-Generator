@@ -23,8 +23,13 @@ const client = axios.create({ baseURL: API_BASE });
 // once over separate connections uses more of the available bandwidth, and
 // a chunk that fails only has to retry itself instead of restarting the
 // whole (potentially multi-GB) transfer from zero.
-const CHUNK_SIZE = 16 * 1024 * 1024; // must match backend uploadChunk's fileSize limit
-const UPLOAD_CONCURRENCY = 5; // browsers allow ~6 connections per host; leave headroom
+// Only used to decide whether a file is small enough to skip chunking
+// entirely (see createJobFromUpload below). The size actually used to
+// slice chunks always comes from the server's /uploads/init response, so
+// this value can never drift out of sync with the backend's real limit and
+// cause every chunk to be rejected as "too large".
+const CHUNK_SIZE_HINT = 32 * 1024 * 1024;
+const UPLOAD_CONCURRENCY = 6; // browsers allow ~6 connections per host
 const CHUNK_MAX_RETRIES = 4;
 
 client.interceptors.response.use(
@@ -59,7 +64,7 @@ export async function createJobFromUrl({ url, ownershipConfirmed, ownerCreditNam
 export async function createJobFromUpload({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
   // Small files: a single request has less overhead than setting up a
   // chunked session for it.
-  if (file.size <= CHUNK_SIZE) {
+  if (file.size <= CHUNK_SIZE_HINT) {
     return uploadWholeFile({ file, ownershipConfirmed, ownerCreditName, onProgress });
   }
   return uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, onProgress });
@@ -98,7 +103,10 @@ async function uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, o
     originalFileName: file.name,
     originalFileSize: file.size,
   });
-  const { uploadId } = initData;
+  const { uploadId, chunkSize } = initData;
+  // Trust the server's chunk size over any client-side assumption — this is
+  // what keeps chunk slicing permanently in sync with the backend's limit.
+  const CHUNK_SIZE = Number(chunkSize) > 0 ? Number(chunkSize) : CHUNK_SIZE_HINT;
 
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
   const uploadedBytesByChunk = new Array(totalChunks).fill(0);
@@ -120,7 +128,7 @@ async function uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, o
   async function worker() {
     while (nextIndex < totalChunks) {
       const index = nextIndex++;
-      await uploadChunkWithRetry({ uploadId, file, index, uploadedBytesByChunk, reportProgress });
+      await uploadChunkWithRetry({ uploadId, file, index, chunkSize: CHUNK_SIZE, uploadedBytesByChunk, reportProgress });
     }
   }
   await Promise.all(
@@ -132,9 +140,9 @@ async function uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, o
   return job;
 }
 
-async function uploadChunkWithRetry({ uploadId, file, index, uploadedBytesByChunk, reportProgress }) {
-  const start = index * CHUNK_SIZE;
-  const blob = file.slice(start, Math.min(start + CHUNK_SIZE, file.size));
+async function uploadChunkWithRetry({ uploadId, file, index, chunkSize, uploadedBytesByChunk, reportProgress }) {
+  const start = index * chunkSize;
+  const blob = file.slice(start, Math.min(start + chunkSize, file.size));
 
   let lastError;
   for (let attempt = 1; attempt <= CHUNK_MAX_RETRIES; attempt += 1) {

@@ -43,7 +43,11 @@ router.post("/uploads/init", asyncHandler(async (req, res) => {
     path.join(dir, "meta.json"),
     JSON.stringify({ ownerCreditName, originalFileName, originalFileSize: fileSize, expectedChunks })
   );
-  res.status(201).json({ uploadId });
+  // Return the server's actual chunk size so the frontend never has to
+  // guess/hardcode a value that could drift out of sync with this server's
+  // configuration (that drift is what causes spurious "file too large"
+  // errors on every chunk).
+  res.status(201).json({ uploadId, chunkSize: CHUNK_SIZE });
 }));
 
 router.post("/uploads/:uploadId/chunks", uploadChunk.single("chunk"), asyncHandler(async (req, res) => {
@@ -59,6 +63,13 @@ router.post("/uploads/:uploadId/chunks", uploadChunk.single("chunk"), asyncHandl
     if (Number.isInteger(meta.expectedChunks) && index >= meta.expectedChunks) {
       await fs.unlink(req.file.path).catch(() => {});
       return res.status(400).json({ error: "chunk index out of range for this upload" });
+    }
+    // multer's own limiter allows a small margin above CHUNK_SIZE (see
+    // upload.js), so enforce the exact limit here — only the last chunk of
+    // a file is allowed to be smaller, never any chunk larger than CHUNK_SIZE.
+    if (req.file.size > CHUNK_SIZE) {
+      await fs.unlink(req.file.path).catch(() => {});
+      return res.status(413).json({ error: "Chunk exceeds the server's configured chunk size." });
     }
     await fs.rename(req.file.path, path.join(dir, `${String(index).padStart(6, "0")}.part`));
     res.status(204).end();

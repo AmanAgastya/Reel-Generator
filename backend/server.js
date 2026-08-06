@@ -44,9 +44,8 @@ app.get("/api/health", (req, res) => res.json({ ok: true }));
 app.use("/api/jobs", jobsRouter);
 
 app.use((err, req, res, next) => {
-  console.error(err);
-
   if (res.headersSent) {
+    console.error(err);
     return next(err);
   }
 
@@ -59,15 +58,24 @@ app.use((err, req, res, next) => {
   }
 
   if (err.name === "MongooseServerSelectionError" || err.name === "MongoNetworkError" || err.name === "MongooseNetworkError") {
+    console.error(err);
     return res.status(503).json({
       error: "Database unavailable. Please try again in a moment.",
     });
   }
 
   if (err.code?.startsWith("LIMIT_")) {
+    // Expected/routine client-side condition (a chunk or file exceeded a
+    // configured cap) — log one short line instead of the full stack trace,
+    // and keep the specific route it happened on since a per-chunk limit and
+    // the whole-file limit are different numbers and shouldn't share wording.
+    const isChunkUpload = req.path.includes("/uploads/") && req.path.endsWith("/chunks");
     const message = err.code === "LIMIT_FILE_SIZE"
-      ? "Video file is too large. Maximum upload size is 5GB."
+      ? isChunkUpload
+        ? "Upload chunk was larger than the server's configured chunk size. This usually clears up on retry."
+        : "Video file is too large. Maximum upload size is 5GB."
       : err.message || "Upload limit exceeded.";
+    console.warn(`[upload] ${err.code} on ${req.method} ${req.path}`);
     return res.status(413).json({ error: message });
   }
 
@@ -75,6 +83,7 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ error: "Invalid upload field." });
   }
 
+  console.error(err);
   res.status(500).json({ error: err.message || "Internal server error" });
 });
 
