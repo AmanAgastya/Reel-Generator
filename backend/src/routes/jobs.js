@@ -75,72 +75,14 @@ router.post("/uploads/:uploadId/complete", asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "invalid upload completion" });
   }
   const dir = path.join(CHUNK_ROOT, uploadId);
-
-  let meta;
+  let outputPath;
   try {
-    meta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf8"));
-  } catch {
-    return res.status(404).json({ error: "upload session not found" });
-  }
+    const meta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf8"));
+    if (Number.isInteger(meta.expectedChunks) && totalChunks !== meta.expectedChunks) {
+      return res.status(400).json({ error: "totalChunks does not match the number of chunks expected for this upload" });
+    }
+    outputPath = path.join(STORAGE_DIR, "uploads", `${Date.now()}-${meta.originalFileName}`);
 
-  // If this exact upload was already completed — e.g. the browser sent
-  // this request once, the server finished creating the job, but the
-  // response never made it back (dropped connection, slow network) and
-  // the client retried — return the existing job instead of assembling
-  // and enqueuing the video a second time.
-  if (meta.jobId) {
-    const existingJob = await Job.findById(meta.jobId).catch(() => null);
-    if (existingJob) return res.status(200).json(existingJob);
-  }
-
-  if (Number.isInteger(meta.expectedChunks) && totalChunks !== meta.expectedChunks) {
-    return res.status(400).json({ error: "totalChunks does not match the number of chunks expected for this upload" });
-  }
-
-  // BUGFIX ("uploads a large video, then after a while it fails and the
-  // video never loads"): this used to assemble the whole file (streaming
-  // every one of potentially hundreds of chunk parts into the final file)
-  // *before* responding at all. For a multi-gigabyte upload that assembly
-  // step alone can take a long time, and the HTTP response sits open and
-  // silent for all of it — long enough to trip a reverse proxy's idle-
-  // connection timeout (Render, nginx, etc. commonly default to ~60-100s).
-  // When that happened the browser saw a hard connection failure, the
-  // frontend had no job to show, and the entire upload appeared to
-  // "rollback" even though every chunk had already made it to the server.
-  //
-  // Fix: create the Job row and respond immediately, then do the
-  // (potentially slow) file assembly in the background. The frontend gets
-  // a job id right away and can navigate to the status page — which keeps
-  // polling regardless of how long assembly takes — instead of holding one
-  // long-lived request hostage to it.
-  const job = await Job.create({
-    sourceType: "upload",
-    originalFileName: meta.originalFileName,
-    ownershipConfirmed: true,
-    ownerCreditName: meta.ownerCreditName,
-  });
-
-  meta.jobId = String(job._id);
-  await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify(meta)).catch(() => {});
-
-  res.status(201).json(job);
-
-  assembleUploadInBackground({ dir, totalChunks, meta, jobId: job._id }).catch((err) => {
-    console.error(`[jobs] background upload assembly failed for job ${job._id}:`, err);
-  });
-}));
-
-/**
- * Streams every chunk part into the final output file, verifies the
- * assembled size, then points the job at it and kicks off processing.
- * Runs after the HTTP response for /complete has already been sent (see
- * above) so a slow assembly never holds a request open. Any failure here
- * marks the job "failed" with a clear error instead of surfacing as a
- * failed HTTP request the frontend has no job to poll for.
- */
-async function assembleUploadInBackground({ dir, totalChunks, meta, jobId }) {
-  const outputPath = path.join(STORAGE_DIR, "uploads", `${Date.now()}-${meta.originalFileName}`);
-  try {
     // Stream each part into the output file instead of reading it fully
     // into memory and appendFile-ing it (which reopens the destination
     // file for every single chunk). Piping keeps one file descriptor open
@@ -166,19 +108,17 @@ async function assembleUploadInBackground({ dir, totalChunks, meta, jobId }) {
       throw new Error("Assembled file size does not match the uploaded file — one or more chunks may be missing.");
     }
 
-    await Job.findByIdAndUpdate(jobId, { sourceFilePath: outputPath });
+    const job = await Job.create({ sourceType: "upload", sourceFilePath: outputPath, originalFileName: meta.originalFileName, ownershipConfirmed: true, ownerCreditName: meta.ownerCreditName });
     await fs.rm(dir, { recursive: true, force: true });
-    enqueueJob(jobId);
+    enqueueJob(job._id);
+    res.status(201).json(job);
   } catch (err) {
     // Don't leave a truncated/corrupt partial file behind on disk if
     // assembly failed partway through.
-    await fs.unlink(outputPath).catch(() => {});
-    await Job.findByIdAndUpdate(jobId, {
-      status: "failed",
-      error: `Could not complete upload: ${err.message}`,
-    }).catch(() => {});
+    if (outputPath) await fs.unlink(outputPath).catch(() => {});
+    res.status(400).json({ error: `Could not complete upload: ${err.message}` });
   }
-}
+}));
 
 /**
  * Create a job from a YouTube URL (your own channel's video).

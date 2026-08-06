@@ -37,6 +37,11 @@ const jobSchema = new mongoose.Schema(
       ],
       default: "queued",
     },
+    // Set once processing actually begins (see workers/jobProcessor.js) and
+    // used by the frontend to show "Started Xs/Xm/Xh ago". This was missing
+    // from the schema, so Mongoose silently dropped the field on save and
+    // it never reached the client.
+    startedAt: { type: Date },
     progress: { type: Number, default: 0 }, // 0-100
     clipRenderCount: { type: Number, default: 0 },
     error: { type: String },
