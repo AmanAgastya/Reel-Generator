@@ -31,6 +31,13 @@ const client = axios.create({ baseURL: API_BASE });
 const CHUNK_SIZE_HINT = 32 * 1024 * 1024;
 const UPLOAD_CONCURRENCY = 6; // browsers allow ~6 connections per host
 const CHUNK_MAX_RETRIES = 4;
+// A chunk request that goes this long without a single upload-progress
+// event is a dead/stalled connection, not just a slow one - this is what
+// showed up in the Render logs as individual chunk requests hanging for
+// ~864 seconds before eventually failing. Abort and retry it instead of
+// waiting on a connection that isn't coming back. The timer resets on every
+// progress event, so a genuinely slow-but-moving upload is never killed.
+const CHUNK_STALL_TIMEOUT_MS = 20000;
 
 client.interceptors.response.use(
   (response) => response,
@@ -103,15 +110,28 @@ async function uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, o
     originalFileName: file.name,
     originalFileSize: file.size,
   });
-  const { uploadId, chunkSize } = initData;
+  const { uploadId, chunkSize, uploadedChunks } = initData;
   // Trust the server's chunk size over any client-side assumption — this is
   // what keeps chunk slicing permanently in sync with the backend's limit.
   const CHUNK_SIZE = Number(chunkSize) > 0 ? Number(chunkSize) : CHUNK_SIZE_HINT;
 
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
   const uploadedBytesByChunk = new Array(totalChunks).fill(0);
-  let lastReportedPct = -1;
 
+  // If /uploads/init recognized this file (same name + size) as a session
+  // that already has chunks saved on disk from a previous attempt - a page
+  // refresh, a dropped connection, or a server restart - skip re-sending
+  // those chunks entirely and start the progress bar from where it left off
+  // instead of from 0%.
+  const alreadyUploaded = new Set(Array.isArray(uploadedChunks) ? uploadedChunks : []);
+  for (const index of alreadyUploaded) {
+    if (index >= 0 && index < totalChunks) {
+      const start = index * CHUNK_SIZE;
+      uploadedBytesByChunk[index] = Math.min(CHUNK_SIZE, file.size - start);
+    }
+  }
+
+  let lastReportedPct = -1;
   function reportProgress() {
     const uploaded = uploadedBytesByChunk.reduce((sum, bytes) => sum + bytes, 0);
     // Cap at 99% while chunks are in flight - the server still has to
@@ -123,11 +143,13 @@ async function uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, o
       onProgress?.(pct);
     }
   }
+  reportProgress(); // reflect any resumed progress immediately, before the first byte of this session is sent
 
   let nextIndex = 0;
   async function worker() {
     while (nextIndex < totalChunks) {
       const index = nextIndex++;
+      if (alreadyUploaded.has(index)) continue;
       await uploadChunkWithRetry({ uploadId, file, index, chunkSize: CHUNK_SIZE, uploadedBytesByChunk, reportProgress });
     }
   }
@@ -149,15 +171,28 @@ async function uploadChunkWithRetry({ uploadId, file, index, chunkSize, uploaded
     const form = new FormData();
     form.append("chunk", blob);
     form.append("index", String(index));
+
+    const controller = new AbortController();
+    let stallTimer;
+    const armStallTimer = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => controller.abort(), CHUNK_STALL_TIMEOUT_MS);
+    };
+    armStallTimer();
+
     try {
       await client.post(`/jobs/uploads/${uploadId}/chunks`, form, {
+        signal: controller.signal,
         onUploadProgress: (event) => {
+          armStallTimer(); // any movement resets the stall clock - only true stalls get aborted
           uploadedBytesByChunk[index] = event.loaded;
           reportProgress();
         },
       });
+      clearTimeout(stallTimer);
       return;
     } catch (error) {
+      clearTimeout(stallTimer);
       lastError = error;
       uploadedBytesByChunk[index] = 0;
       reportProgress();

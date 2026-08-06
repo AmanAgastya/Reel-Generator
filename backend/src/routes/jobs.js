@@ -1,9 +1,9 @@
 import express from "express";
 import path from "path";
 import fs from "fs/promises";
+import crypto from "crypto";
 import { createReadStream, createWriteStream } from "fs";
 import { pipeline } from "stream/promises";
-import { v4 as uuid } from "uuid";
 import Job from "../models/Job.js";
 import Clip from "../models/Clip.js";
 import { upload, uploadChunk, MAX_UPLOAD_FILE_SIZE, CHUNK_SIZE } from "../middleware/upload.js";
@@ -35,10 +35,43 @@ router.post("/uploads/init", asyncHandler(async (req, res) => {
       error: `Video file is too large. Maximum upload size is ${Math.floor(MAX_UPLOAD_FILE_SIZE / (1024 * 1024 * 1024))}GB.`,
     });
   }
-  const uploadId = uuid();
+
+  // The uploadId is derived deterministically from the file's identity
+  // (name + size + credit name) instead of a random uuid. That's what makes
+  // uploads resumable: if the tab is refreshed, the network drops, or the
+  // server restarts mid-upload (all of which show up in the Render logs as
+  // a stall followed by SIGTERM), re-selecting the *same* file and calling
+  // /uploads/init again lands on the same uploadId - and therefore the same
+  // on-disk chunk directory - instead of starting a brand new empty session.
+  // The chunk directory lives on the persistent Render disk (see
+  // render.yaml), so parts saved before a restart are still there after it.
+  const fingerprint = `${originalFileName}:${fileSize}:${ownerCreditName}`;
+  const uploadId = crypto.createHash("sha1").update(fingerprint).digest("hex").slice(0, 36);
   const dir = path.join(CHUNK_ROOT, uploadId);
-  await fs.mkdir(dir, { recursive: true });
   const expectedChunks = Math.ceil(fileSize / CHUNK_SIZE);
+
+  // Look for a previous, unfinished session for this exact file and report
+  // back which chunks it already has, so the client can skip re-sending
+  // them instead of re-uploading the whole file from 0%.
+  let uploadedChunks = [];
+  try {
+    const existingMeta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf8"));
+    if (existingMeta.originalFileSize === fileSize && existingMeta.originalFileName === originalFileName) {
+      const files = await fs.readdir(dir);
+      uploadedChunks = files
+        .filter((name) => name.endsWith(".part"))
+        .map((name) => Number(name.replace(".part", "")))
+        .filter((index) => Number.isInteger(index));
+    } else {
+      // Fingerprint collision with a different file - extremely unlikely,
+      // but start clean rather than mixing chunks from two different files.
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  } catch {
+    // No existing session for this file yet - that's fine, we create one below.
+  }
+
+  await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(
     path.join(dir, "meta.json"),
     JSON.stringify({ ownerCreditName, originalFileName, originalFileSize: fileSize, expectedChunks })
@@ -47,7 +80,7 @@ router.post("/uploads/init", asyncHandler(async (req, res) => {
   // guess/hardcode a value that could drift out of sync with this server's
   // configuration (that drift is what causes spurious "file too large"
   // errors on every chunk).
-  res.status(201).json({ uploadId, chunkSize: CHUNK_SIZE });
+  res.status(201).json({ uploadId, chunkSize: CHUNK_SIZE, uploadedChunks });
 }));
 
 router.post("/uploads/:uploadId/chunks", uploadChunk.single("chunk"), asyncHandler(async (req, res) => {
