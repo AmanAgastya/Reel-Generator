@@ -96,6 +96,7 @@ async function uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, o
     ownershipConfirmed,
     ownerCreditName,
     originalFileName: file.name,
+    originalFileSize: file.size,
   });
   const { uploadId } = initData;
 

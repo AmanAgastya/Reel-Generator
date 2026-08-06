@@ -1,10 +1,12 @@
 import express from "express";
 import path from "path";
 import fs from "fs/promises";
+import { createReadStream, createWriteStream } from "fs";
+import { pipeline } from "stream/promises";
 import { v4 as uuid } from "uuid";
 import Job from "../models/Job.js";
 import Clip from "../models/Clip.js";
-import { upload, uploadChunk } from "../middleware/upload.js";
+import { upload, uploadChunk, MAX_UPLOAD_FILE_SIZE, CHUNK_SIZE } from "../middleware/upload.js";
 import { enqueueJob } from "../workers/jobProcessor.js";
 import { generateCaptionForClip } from "../services/analyzer.js";
 
@@ -15,14 +17,32 @@ const CHUNK_ROOT = path.join(STORAGE_DIR, "uploads", ".chunks");
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 router.post("/uploads/init", asyncHandler(async (req, res) => {
-  const { ownershipConfirmed, ownerCreditName, originalFileName } = req.body;
+  const { ownershipConfirmed, ownerCreditName, originalFileName, originalFileSize } = req.body;
   if (!ownershipConfirmed || !ownerCreditName || !originalFileName) {
     return res.status(400).json({ error: "ownership confirmation, credit name, and file name are required" });
+  }
+  const fileSize = Number(originalFileSize);
+  // The frontend already refuses to select a file over MAX_UPLOAD_FILE_SIZE,
+  // but that's client-side only — validate the real size here too so a
+  // chunked session (which multer's normal fileSize limit never sees,
+  // since each chunk is well under it) can't be used to smuggle an
+  // oversized file onto disk.
+  if (!Number.isFinite(fileSize) || fileSize <= 0) {
+    return res.status(400).json({ error: "originalFileSize is required" });
+  }
+  if (fileSize > MAX_UPLOAD_FILE_SIZE) {
+    return res.status(413).json({
+      error: `Video file is too large. Maximum upload size is ${Math.floor(MAX_UPLOAD_FILE_SIZE / (1024 * 1024 * 1024))}GB.`,
+    });
   }
   const uploadId = uuid();
   const dir = path.join(CHUNK_ROOT, uploadId);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify({ ownerCreditName, originalFileName }));
+  const expectedChunks = Math.ceil(fileSize / CHUNK_SIZE);
+  await fs.writeFile(
+    path.join(dir, "meta.json"),
+    JSON.stringify({ ownerCreditName, originalFileName, originalFileSize: fileSize, expectedChunks })
+  );
   res.status(201).json({ uploadId });
 }));
 
@@ -35,7 +55,11 @@ router.post("/uploads/:uploadId/chunks", uploadChunk.single("chunk"), asyncHandl
   }
   const dir = path.join(CHUNK_ROOT, uploadId);
   try {
-    await fs.access(path.join(dir, "meta.json"));
+    const meta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf8"));
+    if (Number.isInteger(meta.expectedChunks) && index >= meta.expectedChunks) {
+      await fs.unlink(req.file.path).catch(() => {});
+      return res.status(400).json({ error: "chunk index out of range for this upload" });
+    }
     await fs.rename(req.file.path, path.join(dir, `${String(index).padStart(6, "0")}.part`));
     res.status(204).end();
   } catch {
@@ -51,18 +75,47 @@ router.post("/uploads/:uploadId/complete", asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "invalid upload completion" });
   }
   const dir = path.join(CHUNK_ROOT, uploadId);
+  let outputPath;
   try {
     const meta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf8"));
-    const outputPath = path.join(STORAGE_DIR, "uploads", `${Date.now()}-${meta.originalFileName}`);
-    for (let index = 0; index < totalChunks; index += 1) {
-      const part = path.join(dir, `${String(index).padStart(6, "0")}.part`);
-      await fs.appendFile(outputPath, await fs.readFile(part));
+    if (Number.isInteger(meta.expectedChunks) && totalChunks !== meta.expectedChunks) {
+      return res.status(400).json({ error: "totalChunks does not match the number of chunks expected for this upload" });
     }
+    outputPath = path.join(STORAGE_DIR, "uploads", `${Date.now()}-${meta.originalFileName}`);
+
+    // Stream each part into the output file instead of reading it fully
+    // into memory and appendFile-ing it (which reopens the destination
+    // file for every single chunk). Piping keeps one file descriptor open
+    // for the whole assembly and never buffers more than a stream's
+    // internal chunk size at once, which is both faster and lighter on
+    // memory for large, many-chunk uploads.
+    const outStream = createWriteStream(outputPath, { flags: "wx" });
+    try {
+      for (let index = 0; index < totalChunks; index += 1) {
+        const part = path.join(dir, `${String(index).padStart(6, "0")}.part`);
+        await pipeline(createReadStream(part), outStream, { end: false });
+      }
+    } finally {
+      outStream.end();
+      await new Promise((resolve, reject) => {
+        outStream.on("finish", resolve);
+        outStream.on("error", reject);
+      }).catch(() => {});
+    }
+
+    const assembledStats = await fs.stat(outputPath);
+    if (meta.originalFileSize && assembledStats.size !== meta.originalFileSize) {
+      throw new Error("Assembled file size does not match the uploaded file — one or more chunks may be missing.");
+    }
+
     const job = await Job.create({ sourceType: "upload", sourceFilePath: outputPath, originalFileName: meta.originalFileName, ownershipConfirmed: true, ownerCreditName: meta.ownerCreditName });
     await fs.rm(dir, { recursive: true, force: true });
     enqueueJob(job._id);
     res.status(201).json(job);
   } catch (err) {
+    // Don't leave a truncated/corrupt partial file behind on disk if
+    // assembly failed partway through.
+    if (outputPath) await fs.unlink(outputPath).catch(() => {});
     res.status(400).json({ error: `Could not complete upload: ${err.message}` });
   }
 }));

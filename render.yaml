@@ -9,8 +9,14 @@ services:
     healthCheckPath: /api/health
     disk:
       name: reel-generator-storage
+      # Uploads are stored and processed at their original size (no
+      # compression), and MAX_UPLOAD_FILE_SIZE now allows up to 5GB per
+      # video — a 5GB disk could be filled by a single upload. Sized to
+      # comfortably hold a few large in-flight jobs (source + rendered
+      # clips) at once; raise further if you expect heavier concurrent
+      # traffic.
       mountPath: /app/storage
-      sizeGB: 5
+      sizeGB: 20
     envVars:
       - key: NODE_ENV
         value: production
@@ -18,6 +24,10 @@ services:
         value: 5000
       - key: STORAGE_DIR
         value: ./storage
+      - key: MAX_UPLOAD_FILE_SIZE
+        value: "5368709120" # 5GB — uploads are never compressed
+      - key: UPLOAD_CHUNK_SIZE
+        value: "16777216" # 16MB — must match frontend CHUNK_SIZE
       - key: CLIENT_ORIGIN
         # Origins do not include a trailing slash. A trailing slash causes the
         # browser's Origin header to fail the exact CORS match.

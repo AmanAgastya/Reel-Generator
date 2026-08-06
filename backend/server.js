@@ -66,7 +66,7 @@ app.use((err, req, res, next) => {
 
   if (err.code?.startsWith("LIMIT_")) {
     const message = err.code === "LIMIT_FILE_SIZE"
-      ? "Video file is too large. Maximum upload size is 1GB."
+      ? "Video file is too large. Maximum upload size is 5GB."
       : err.message || "Upload limit exceeded.";
     return res.status(413).json({ error: message });
   }

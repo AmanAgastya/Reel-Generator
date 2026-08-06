@@ -300,9 +300,12 @@ body::after {
   box-shadow: 0 0 0 3px rgba(255, 210, 63, 0.14);
 }
 
-.field.checkbox { display: flex; align-items: flex-start; gap: 10px; }
-.field.checkbox input { margin-top: 4px; }
-.field.checkbox span { color: var(--text); font-size: 14px; line-height: 1.4; }
+.field-hint {
+  margin: -8px 0 18px;
+  color: var(--text-dim, #8a8a94);
+  font-size: 13px;
+  line-height: 1.4;
+}
 
 .submit {
   width: 100%;
