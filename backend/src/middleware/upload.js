@@ -27,8 +27,12 @@ export const upload = multer({
 });
 
 // Keep each browser request safely below common proxy upload limits. Chunks
-// are assembled by the route only after every part has arrived.
+// are assembled by the route only after every part has arrived. Sized to
+// match the frontend's chunk size (see CHUNK_SIZE in frontend/src/api/client.js) -
+// large enough to keep request-count/overhead low, small enough that
+// several chunks can transfer over separate connections at once and a
+// failed chunk only has to retry itself, not the whole file.
 export const uploadChunk = multer({
   dest: chunkDir,
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: 16 * 1024 * 1024 },
 });

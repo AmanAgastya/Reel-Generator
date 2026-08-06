@@ -16,6 +16,17 @@ const API_BASE = getApiBase();
 
 const client = axios.create({ baseURL: API_BASE });
 
+// A single multipart POST for a large file is limited to whatever
+// throughput one TCP connection can get on the browser->server link -
+// on a higher-latency connection that's often well under the link's real
+// bandwidth. Splitting the file into chunks and sending several of them at
+// once over separate connections uses more of the available bandwidth, and
+// a chunk that fails only has to retry itself instead of restarting the
+// whole (potentially multi-GB) transfer from zero.
+const CHUNK_SIZE = 16 * 1024 * 1024; // must match backend uploadChunk's fileSize limit
+const UPLOAD_CONCURRENCY = 5; // browsers allow ~6 connections per host; leave headroom
+const CHUNK_MAX_RETRIES = 4;
+
 client.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -46,6 +57,15 @@ export async function createJobFromUrl({ url, ownershipConfirmed, ownerCreditNam
 }
 
 export async function createJobFromUpload({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
+  // Small files: a single request has less overhead than setting up a
+  // chunked session for it.
+  if (file.size <= CHUNK_SIZE) {
+    return uploadWholeFile({ file, ownershipConfirmed, ownerCreditName, onProgress });
+  }
+  return uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, onProgress });
+}
+
+async function uploadWholeFile({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
   const form = new FormData();
   form.append("video", file);
   form.append("ownershipConfirmed", ownershipConfirmed);
@@ -62,6 +82,81 @@ export async function createJobFromUpload({ file, ownershipConfirmed, ownerCredi
   );
 
   return data;
+}
+
+// A single multipart POST for a large file is limited to whatever
+// throughput one TCP connection can get on the browser->server link -
+// on a higher-latency connection that's often well under the link's real
+// bandwidth. Splitting the file into chunks and sending several of them at
+// once over separate connections uses more of the available bandwidth, and
+// a chunk that fails only has to retry itself instead of restarting the
+// whole (potentially multi-GB) transfer from zero.
+async function uploadFileInChunks({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
+  const { data: initData } = await client.post("/jobs/uploads/init", {
+    ownershipConfirmed,
+    ownerCreditName,
+    originalFileName: file.name,
+  });
+  const { uploadId } = initData;
+
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  const uploadedBytesByChunk = new Array(totalChunks).fill(0);
+  let lastReportedPct = -1;
+
+  function reportProgress() {
+    const uploaded = uploadedBytesByChunk.reduce((sum, bytes) => sum + bytes, 0);
+    // Cap at 99% while chunks are in flight - the server still has to
+    // assemble the parts in the "complete" step below, so 100% is reserved
+    // for once the job actually exists.
+    const pct = Math.min(99, Math.round((uploaded / file.size) * 100));
+    if (pct !== lastReportedPct) {
+      lastReportedPct = pct;
+      onProgress?.(pct);
+    }
+  }
+
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < totalChunks) {
+      const index = nextIndex++;
+      await uploadChunkWithRetry({ uploadId, file, index, uploadedBytesByChunk, reportProgress });
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(UPLOAD_CONCURRENCY, totalChunks) }, worker)
+  );
+
+  const { data: job } = await client.post(`/jobs/uploads/${uploadId}/complete`, { totalChunks });
+  onProgress?.(100);
+  return job;
+}
+
+async function uploadChunkWithRetry({ uploadId, file, index, uploadedBytesByChunk, reportProgress }) {
+  const start = index * CHUNK_SIZE;
+  const blob = file.slice(start, Math.min(start + CHUNK_SIZE, file.size));
+
+  let lastError;
+  for (let attempt = 1; attempt <= CHUNK_MAX_RETRIES; attempt += 1) {
+    const form = new FormData();
+    form.append("chunk", blob);
+    form.append("index", String(index));
+    try {
+      await client.post(`/jobs/uploads/${uploadId}/chunks`, form, {
+        onUploadProgress: (event) => {
+          uploadedBytesByChunk[index] = event.loaded;
+          reportProgress();
+        },
+      });
+      return;
+    } catch (error) {
+      lastError = error;
+      uploadedBytesByChunk[index] = 0;
+      reportProgress();
+      if (attempt === CHUNK_MAX_RETRIES) break;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+    }
+  }
+  throw lastError;
 }
 
 async function retryNetworkRequest(request, attempts = 3) {
