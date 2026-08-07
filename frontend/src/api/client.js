@@ -29,7 +29,13 @@ const client = axios.create({ baseURL: API_BASE });
 // this value can never drift out of sync with the backend's real limit and
 // cause every chunk to be rejected as "too large".
 const CHUNK_SIZE_HINT = 32 * 1024 * 1024;
-const UPLOAD_CONCURRENCY = 6; // browsers allow ~6 connections per host
+// Render (and most modern hosts/CDNs) terminates connections over HTTP/2,
+// which multiplexes many concurrent streams over one connection rather
+// than opening a new TCP connection per request - the old "~6 connections
+// per host" ceiling was an HTTP/1.1-era limit. 10 concurrent chunk uploads
+// use more of the link's real bandwidth without meaningfully increasing
+// per-chunk overhead.
+const UPLOAD_CONCURRENCY = 10;
 const CHUNK_MAX_RETRIES = 4;
 // A chunk request that goes this long without a single upload-progress
 // event is a dead/stalled connection, not just a slow one - this is what

@@ -20,6 +20,14 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Chunked video uploads write several parts to disk at once
+      # (UPLOAD_CONCURRENCY in the frontend). fs writes go through libuv's
+      # threadpool, which defaults to only 4 threads - below the 10
+      # concurrent chunk uploads the client now sends, so writes would
+      # queue behind each other. Must be set as a real environment
+      # variable (libuv reads it once at process start), not in code.
+      - key: UV_THREADPOOL_SIZE
+        value: "12"
       - key: PORT
         value: 5000
       - key: STORAGE_DIR
@@ -47,7 +55,7 @@ services:
       - key: GROQ_WHISPER_MODEL
         value: whisper-large-v3
       - key: GROQ_ANALYSIS_MODEL
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
       - key: YTDLP_COOKIES_FILE
         sync: false # optional path to a securely mounted yt-dlp cookies.txt
       - key: MIN_CLIP_SECONDS

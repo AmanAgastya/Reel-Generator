@@ -3,10 +3,14 @@ import os from "os";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import { getGroqClient } from "../utils/groqKeyPool.js";
 
-// NOTE: "llama-3.3-small" is not a real Groq model id and was causing every
-// analysis call to fail whenever GROQ_ANALYSIS_MODEL wasn't explicitly set.
-// Default to the same model documented in .env.example.
-const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "llama-3.3-70b-versatile";
+// Groq deprecated llama-3.3-70b-versatile on June 17, 2026 (see
+// https://console.groq.com/docs/deprecations) - every analysis call using
+// the old default was failing with a "model_decommissioned" error, which
+// wasn't recognized as a special case below, so every chunk silently
+// failed and analyzeBestMoments fell back to returning a single generic
+// clip. This is what produced "only 1 clip from a 1-hour video" with no
+// visible error. openai/gpt-oss-120b is Groq's recommended replacement.
+const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "openai/gpt-oss-120b";
 
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
@@ -133,7 +137,6 @@ Respond ONLY with JSON, no prose, in this exact shape:
         max_tokens: maxTokensForChunk,
       })
     );
-
     const parsed = JSON.parse(completion.choices[0].message.content || "{}");
     return (Array.isArray(parsed.clips) ? parsed.clips : []).map((clip) => ({
       chunkIndex,
@@ -173,6 +176,24 @@ async function retryAnalysisRequest(fn) {
       lastError = error;
       const message = String(error?.message || "").toLowerCase();
       const isRateLimit = message.includes("rate limit");
+
+      // Groq periodically retires models (see
+      // console.groq.com/docs/deprecations). A decommissioned model fails
+      // every single call identically, so retrying it - and quietly
+      // swallowing the failure per-chunk, the way a transient error is
+      // handled - just burns time before analyzeBestMoments falls back to
+      // one generic clip with no indication anything went wrong. Fail
+      // immediately with a message that names the actual problem instead.
+      const isDecommissioned = message.includes("decommissioned") || message.includes("model_decommissioned");
+      if (isDecommissioned) {
+        throw Object.assign(
+          new Error(
+            `Groq model "${ANALYSIS_MODEL}" has been decommissioned. Set GROQ_ANALYSIS_MODEL to a currently ` +
+              `supported model (see https://console.groq.com/docs/deprecations for Groq's current recommendation).`
+          ),
+          { isModelDecommissioned: true, cause: error }
+        );
+      }
 
       if (isRateLimit) {
         const wait = parseRateLimitWaitSeconds(message);
@@ -431,9 +452,10 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
   const transcriptChunks = fullTranscript.length <= MAX_ANALYSIS_CHARS ? [fullTranscript] : chunkTranscript(transcriptLines);
 
   // Tracks whether any chunk failed specifically because Groq's token quota
-  // is exhausted (as opposed to a transient error) - see the check after
-  // chunkResults below.
+  // is exhausted, or the configured model has been decommissioned (as
+  // opposed to a transient error) - see the check after chunkResults below.
   let quotaExhaustedError = null;
+  let modelDecommissionedError = null;
 
   // Chunks are analyzed concurrently (was: sequential await in a for loop,
   // which meant a 4-chunk transcript took 4x as long as it needed to).
@@ -451,6 +473,7 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
       } catch (error) {
         console.error("[analyzer] chunk analysis failed:", error);
         if (error?.isQuotaExhausted) quotaExhaustedError = error;
+        if (error?.isModelDecommissioned) modelDecommissionedError = error;
         chunkResults.push([]);
       }
       if (chunkIndex < transcriptChunks.length - 1) {
@@ -468,6 +491,7 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
         } catch (error) {
           console.error("[analyzer] chunk analysis failed:", error);
           if (error?.isQuotaExhausted) quotaExhaustedError = error;
+          if (error?.isModelDecommissioned) modelDecommissionedError = error;
           return [];
         }
       }
@@ -484,13 +508,13 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
     ownerCreditName
   );
 
-  // If a chunk hit an exhausted token quota AND that left us with fewer
-  // clips than the job should have, surface the real reason as a failed
-  // job instead of silently completing with a handful of clips and no
-  // explanation - that's what produced a confusing "only 2 clips" result
-  // with no visible error.
-  if (quotaExhaustedError && rankedClips.length < MIN_CLIPS_PER_JOB) {
-    throw quotaExhaustedError;
+  // If a chunk hit an exhausted token quota or a decommissioned model AND
+  // that left us with fewer clips than the job should have, surface the
+  // real reason as a failed job instead of silently completing with a
+  // handful of clips (or the single generic fallback clip below) and no
+  // explanation.
+  if ((quotaExhaustedError || modelDecommissionedError) && rankedClips.length < MIN_CLIPS_PER_JOB) {
+    throw modelDecommissionedError || quotaExhaustedError;
   }
 
   if (rankedClips.length) return rankedClips;

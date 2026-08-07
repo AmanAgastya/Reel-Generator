@@ -14,7 +14,7 @@ If you later want to extend this to other creators' content, the only safe paths
    directly (`src/services/downloader.js`, `src/middleware/upload.js`).
 2. **Transcribe** — Groq's hosted Whisper (`whisper-large-v3`) produces a
    timestamped transcript (`src/services/transcriber.js`).
-3. **Analyze** — Groq's Llama (`llama-3.3-70b-versatile`) reads the
+3. **Analyze** — Groq's `openai/gpt-oss-120b` reads the
    transcript and picks 10–20 self-contained "best moments," writing a
    caption and hashtags for each (`src/services/analyzer.js`).
 4. **Clip** — ffmpeg cuts each moment into a vertical 9:16 clip. The full
