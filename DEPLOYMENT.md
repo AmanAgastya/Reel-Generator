@@ -75,21 +75,46 @@ git push -u origin main
 1. **New → Web Service**, connect the repo.
 2. **Root Directory**: `backend`
 3. **Environment**: `Docker` (so it uses `backend/Dockerfile` and gets ffmpeg)
-4. **Instance Type**: at least `Starter` — video processing needs more than
-   the free tier's RAM/CPU, and the free tier spins down on idle mid-job.
-5. **Add a Disk** (Render dashboard → your service → Disks): mount path
-   `/app/storage`, at least 5GB. Without this, every deploy/restart wipes
-   downloaded videos and rendered clips — see the note in Step 6.
-6. Add environment variables (same list as in `render.yaml`): `NODE_ENV=production`,
-   `PORT=5000`, `STORAGE_DIR=./storage`, `MONGO_URI`, `GROQ_API_KEY`,
-   `GROQ_WHISPER_MODEL=whisper-large-v3`, `GROQ_ANALYSIS_MODEL=llama-3.3-70b-versatile`,
-   `CLIENT_ORIGIN`, `MONGO_MAX_POOL_SIZE=10`, `MONGO_MIN_POOL_SIZE=2`,
+4. **Instance Type**: `Free` is fine — see the free-tier notes below for what
+   that trades off, and don't attach a Disk (the free plan doesn't support
+   persistent disks; the app now cleans up its own ephemeral storage
+   instead — see "Storage on the free plan").
+5. Add environment variables (same list as in `render.yaml`): `NODE_ENV=production`,
+   `PORT=5000`, `STORAGE_DIR=./storage`, `STORAGE_MAX_AGE_MINUTES=60`,
+   `STORAGE_SWEEP_INTERVAL_MINUTES=15`, `MONGO_URI`, `GROQ_API_KEY`,
+   `GROQ_WHISPER_MODEL=whisper-large-v3`, `GROQ_ANALYSIS_MODEL=openai/gpt-oss-120b`,
+   `CLIENT_ORIGIN`, `MONGO_MAX_POOL_SIZE=5`, `MONGO_MIN_POOL_SIZE=1`,
    `MONGO_MAX_RETRIES=8`, `MONGO_RETRY_DELAY_MS=5000`, `MIN_CLIP_SECONDS=15`,
-   `MAX_CLIP_SECONDS=60`, `MIN_CLIPS_PER_JOB=8`, `MAX_CLIPS_PER_JOB=30`.
-7. Deploy. Once live, note the URL Render gives you, e.g.
+   `MAX_CLIP_SECONDS=60`, `MIN_CLIPS_PER_JOB=8`, `MAX_CLIPS_PER_JOB=15`,
+   `MAX_CONCURRENT_JOBS=1`, `CLIP_RENDER_CONCURRENCY=1`,
+   `MAX_UPLOAD_FILE_SIZE=524288000`, `YTDLP_CONCURRENT_FRAGMENTS=4`.
+6. Deploy. Once live, note the URL Render gives you, e.g.
    `https://reel-generator-backend.onrender.com`.
-8. Sanity check: visit `https://<your-backend>.onrender.com/api/health` — it
+7. Sanity check: visit `https://<your-backend>.onrender.com/api/health` — it
    should return `{"ok":true}`.
+
+### Storage on the free plan
+
+Render's free web services get **no persistent disk** — only paid plans
+support attaching one. `render.yaml` no longer requests one, so don't add
+one manually either. In exchange, the app now clears its own storage
+aggressively instead of relying on disk space sticking around:
+
+- The moment a job finishes (whether it **succeeds or fails**), its source
+  video (the download or upload) is deleted immediately —
+  `workers/jobProcessor.js` now does this on both paths; previously a
+  failed job left its video on disk forever.
+- A periodic sweep (`STORAGE_MAX_AGE_MINUTES`, default 60) deletes any file
+  under `storage/downloads`, `storage/clips`, or `storage/uploads` older
+  than that, as a backstop for anything the per-job cleanup misses (a
+  crash mid-job, an abandoned chunked upload, a clip you never downloaded).
+  It runs on startup and every `STORAGE_SWEEP_INTERVAL_MINUTES` (default
+  15) after that — see `server.js`.
+
+**Practical effect:** download clips you want to keep within about an hour
+of a job completing, and expect `storage/` to be empty again after every
+deploy or after a free-tier idle spin-down/restart cycle — that's expected,
+not a bug.
 
 ## Step 4 — Deploy the frontend to Vercel
 
@@ -126,15 +151,15 @@ browser will block API calls from your Vercel domain with a CORS error.
    analyzing → clipping → completed`.
 3. Download a finished clip to confirm ffmpeg rendering worked on Render.
 
-### Important: storage is ephemeral without a disk
+### Important: storage is ephemeral (by design, on the free plan)
 
-`backend/storage/` (downloads + rendered clips) lives on local disk. On
-Render, **local disk is wiped on every deploy and on some restarts unless
-you attach a persistent Disk** (Step 3 covers this). Even with a disk
-attached, clips only exist as long as that one instance's disk — this setup
-doesn't scale past a single backend instance. For real multi-instance
-traffic, move `downloader.js`/`clipper.js` output to S3 (or similar) as the
-project's README already flags under "Notes / next steps."
+`backend/storage/` (downloads + rendered clips) lives on local disk, and on
+the free plan there's no persistent Disk to attach — see "Storage on the
+free plan" above for how the app now manages that itself. This setup also
+doesn't scale past a single backend instance (a disk-less free instance
+included) — for real multi-instance traffic, move `downloader.js`/
+`clipper.js` output to S3 (or similar) as the project's README already
+flags under "Notes / next steps."
 
 ### Cold starts / long jobs on Render
 
@@ -143,9 +168,11 @@ project's README already flags under "Notes / next steps."
   restart or deploy mid-job will drop that job silently (it stays stuck in
   its last `status`). Fine for a demo/personal tool; swap in BullMQ + Redis
   before treating this as production-grade for multiple concurrent users.
-- If you're on Render's free tier, the service spins down after 15 minutes
-  of inactivity and takes ~30–60s to wake back up on the next request —
-  expect the first request after idle to be slow. Paid plans avoid this.
+- The free tier spins the service down after 15 minutes of inactivity and
+  takes roughly 30–60s to wake back up on the next request — expect the
+  first request after idle to be slow, and if a job happens to be
+  mid-render when the instance sleeps, it can stall or get dropped as
+  above. Paid plans avoid this by staying always-on.
 
 ## Troubleshooting
 
@@ -155,5 +182,5 @@ project's README already flags under "Notes / next steps."
 | Jobs fail with “Sign in to confirm you’re not a bot” | YouTube blocked Render’s server IP. For videos you own, upload the source file (most reliable), or securely mount a Netscape-format `cookies.txt` file and set `YTDLP_COOKIES_FILE` to its absolute path. Never commit cookies to the repository. |
 | Jobs stuck at `downloading` | `youtube-dl-exec`/YouTube blocking the Render IP, or the source URL isn't actually downloadable — check Render logs |
 | ffmpeg errors in logs | You deployed without Docker environment (native Render Node runtime has no ffmpeg) — confirm the service's Environment is set to Docker |
-| Clips disappear after a while | No persistent Disk attached, or app was redeployed — see the ephemeral storage note above |
+| Clips disappear after a while | Expected on the free plan — either the `STORAGE_MAX_AGE_MINUTES` sweep purged them, or the app was redeployed/idled out. Download clips promptly; see "Storage on the free plan" above |
 | 500 on `/api/jobs/...` mentioning Mongo | `MONGO_URI` wrong, or Atlas Network Access doesn't allow Render's IP |

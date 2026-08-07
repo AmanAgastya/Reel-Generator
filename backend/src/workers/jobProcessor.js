@@ -182,6 +182,21 @@ export async function processJob(jobId) {
     job.progress = 100;
     await job.save();
   } catch (err) {
+    // Clear the source video on failure too — previously this only ran in
+    // the success path, so a failed job (bad transcript, ffmpeg error,
+    // blocked download, etc.) left its downloaded/uploaded video sitting
+    // on disk forever. On the free Render plan there's no persistent disk
+    // and no separate cleanup job, so a run of failed jobs would quietly
+    // fill the container's disk until every subsequent job started
+    // failing too.
+    const leftoverPath = job.workingFilePath || job.sourceFilePath;
+    if (leftoverPath) {
+      await safeDeleteFile(leftoverPath);
+      job.workingFilePath = null;
+      job.sourceFilePath = null;
+      job.sourceFileRemoved = true;
+      job.sourceFileRemovedAt = new Date();
+    }
     job.status = "failed";
     job.error = err.message;
     await job.save();

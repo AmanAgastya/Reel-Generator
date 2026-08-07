@@ -1,9 +1,11 @@
 import "dotenv/config";
+import path from "path";
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
 import { connectDB, disconnectDB } from "./src/config/db.js";
 import jobsRouter from "./src/routes/jobs.js";
+import { purgeOldFiles } from "./src/utils/cleanup.js";
 
 const app = express();
 
@@ -89,8 +91,36 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
+// Render's free plan gives web services no persistent disk (see
+// DEPLOYMENT.md) — storage/ lives on the container's small ephemeral
+// filesystem for as long as the instance stays up, and per-job cleanup in
+// workers/jobProcessor.js already deletes each source video as soon as
+// that job finishes. This sweep is the backstop: it catches anything that
+// slips through (a crash mid-job, an abandoned chunked upload, a clip the
+// user never downloaded) by age instead of relying on a job's own status.
+// Runs once at startup — important because the free instance restarts on
+// every deploy and spins back up after each idle-timeout sleep — and then
+// on an interval while the process stays up.
+const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
+const STORAGE_MAX_AGE_MS = Math.max(1, Number(process.env.STORAGE_MAX_AGE_MINUTES || 60)) * 60 * 1000;
+const STORAGE_SWEEP_INTERVAL_MS = Math.max(1, Number(process.env.STORAGE_SWEEP_INTERVAL_MINUTES || 15)) * 60 * 1000;
+
+async function sweepStorage() {
+  await Promise.all(
+    ["downloads", "clips", "uploads"].map((sub) =>
+      purgeOldFiles(path.join(STORAGE_DIR, sub), STORAGE_MAX_AGE_MS)
+    )
+  );
+}
+
 connectDB().then(() => {
   const server = app.listen(PORT, () => console.log(`[server] listening on port ${PORT}`));
+
+  sweepStorage().catch((err) => console.error("[cleanup] startup sweep failed:", err));
+  const sweepInterval = setInterval(() => {
+    sweepStorage().catch((err) => console.error("[cleanup] scheduled sweep failed:", err));
+  }, STORAGE_SWEEP_INTERVAL_MS);
+  sweepInterval.unref();
 
   // Node defaults to a five-minute request timeout. A large video on a slower
   // connection can exceed that before multer has finished receiving it, which
