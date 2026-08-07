@@ -105,21 +105,34 @@ async function uploadFileInChunksWithSessionRetry(params) {
       return await uploadFileInChunks(params);
     } catch (error) {
       lastError = error;
-      // Only retry the session for a dropped connection (no response came
-      // back at all - a restart, a network blip, our own stall-abort). A
-      // response that DID come back with a 4xx (bad request, session not
-      // found, file too large) is a real, permanent problem - retrying
-      // won't fix it, so surface it immediately instead of silently
-      // retrying for a minute.
-      if (error.response || attempt === SESSION_MAX_RETRIES) break;
+      if (!isRetryableSessionError(error) || attempt === SESSION_MAX_RETRIES) break;
+      const status = error?.response?.status;
       console.warn(
-        `[upload] session interrupted (attempt ${attempt}/${SESSION_MAX_RETRIES}), ` +
-          `retrying in ${SESSION_RETRY_DELAY_MS / 1000}s - the server may be restarting...`
+        `[upload] session interrupted${status ? ` (HTTP ${status})` : ""} ` +
+          `(attempt ${attempt}/${SESSION_MAX_RETRIES}), retrying in ${SESSION_RETRY_DELAY_MS / 1000}s...`
       );
       await new Promise((resolve) => setTimeout(resolve, SESSION_RETRY_DELAY_MS));
     }
   }
   throw lastError;
+}
+
+function isRetryableSessionError(error) {
+  const status = error?.response?.status;
+  // No response at all: a dropped connection, our own stall-abort, a
+  // network blip. Always worth retrying.
+  if (!status) return true;
+  // 404 here specifically means /uploads/:id/chunks couldn't find the
+  // session's on-disk folder — almost always because the server restarted
+  // and either lost or never had a persistent disk for it. Calling
+  // /uploads/init again (which uploadFileInChunks does on every retry)
+  // creates a fresh session and picks the upload back up rather than
+  // treating "the server forgot about this upload" as a reason to give up.
+  // 408/429/502/503/504 are the server or Render's proxy being briefly
+  // unavailable/overloaded — exactly what happens while a new instance is
+  // still booting after a restart. Only a genuine validation problem (bad
+  // request, file too large, missing ownership fields) is permanent.
+  return status === 404 || status === 408 || status === 429 || status >= 500;
 }
 
 async function uploadWholeFile({ file, ownershipConfirmed, ownerCreditName, onProgress }) {
@@ -241,7 +254,12 @@ async function uploadChunkWithRetry({ uploadId, file, index, chunkSize, uploaded
       lastError = error;
       uploadedBytesByChunk[index] = 0;
       reportProgress();
-      if (attempt === CHUNK_MAX_RETRIES) break;
+      // A 404 means the session's on-disk folder is gone (server
+      // restarted) - retrying the exact same request against it will just
+      // 404 again every time. Stop immediately so the session-level retry
+      // in uploadFileInChunksWithSessionRetry can call /uploads/init and
+      // get a real, fresh session instead of burning attempts here first.
+      if (error?.response?.status === 404 || attempt === CHUNK_MAX_RETRIES) break;
       await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
     }
   }
