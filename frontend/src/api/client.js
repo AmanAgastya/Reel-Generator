@@ -29,21 +29,25 @@ const client = axios.create({ baseURL: API_BASE });
 // this value can never drift out of sync with the backend's real limit and
 // cause every chunk to be rejected as "too large".
 const CHUNK_SIZE_HINT = 32 * 1024 * 1024;
-// Render (and most modern hosts/CDNs) terminates connections over HTTP/2,
-// which multiplexes many concurrent streams over one connection rather
-// than opening a new TCP connection per request - the old "~6 connections
-// per host" ceiling was an HTTP/1.1-era limit. 10 concurrent chunk uploads
-// use more of the link's real bandwidth without meaningfully increasing
-// per-chunk overhead.
-const UPLOAD_CONCURRENCY = 10;
-const CHUNK_MAX_RETRIES = 4;
+// Splitting many parallel connections across a link that doesn't actually
+// have much bandwidth to begin with just fragments the little it has -
+// each stream then trickles along slowly and is more likely to go quiet
+// for longer stretches, which is exactly what was tripping the stall
+// timeout below on every single chunk (see the "- - ms - -" pattern with
+// zero successful chunks in the Render logs). A more conservative
+// concurrency gives each connection a fairer share of a weak link.
+const UPLOAD_CONCURRENCY = 4;
+const CHUNK_MAX_RETRIES = 6;
 // A chunk request that goes this long without a single upload-progress
-// event is a dead/stalled connection, not just a slow one - this is what
-// showed up in the Render logs as individual chunk requests hanging for
-// ~864 seconds before eventually failing. Abort and retry it instead of
-// waiting on a connection that isn't coming back. The timer resets on every
-// progress event, so a genuinely slow-but-moving upload is never killed.
-const CHUNK_STALL_TIMEOUT_MS = 20000;
+// event is treated as dead and gets aborted/retried rather than waiting
+// forever - this is what catches a genuinely dropped connection (e.g. a
+// server restart). But on a weak/bursty connection, a real transfer can
+// legitimately go quiet for a while between bursts and then resume - a
+// timeout that's too short kills those before they get the chance, which
+// is what turned "very slow" into "never succeeds at all". 45s is patient
+// enough to ride out normal bursty gaps while still failing a genuinely
+// dead connection reasonably quickly.
+const CHUNK_STALL_TIMEOUT_MS = 45000;
 // Covers a full server restart mid-upload (Render redeploy, container
 // restart, OOM, etc - visible in the logs as "Detected service running on
 // port 5000" appearing again partway through). That drops every in-flight

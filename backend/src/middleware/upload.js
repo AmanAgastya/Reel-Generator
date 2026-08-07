@@ -17,13 +17,18 @@ fs.mkdirSync(chunkDir, { recursive: true });
 export const MAX_UPLOAD_FILE_SIZE = Number(process.env.MAX_UPLOAD_FILE_SIZE || 5 * 1024 * 1024 * 1024); // 5GB
 
 // Keep each browser request safely below common proxy upload limits. Chunks
-// are assembled by the route only after every part has arrived. Large
-// enough to keep request-count/overhead low, small enough that several
-// chunks can transfer over separate connections at once and a failed
-// chunk only has to retry itself, not the whole file. Exported so
+// are assembled by the route only after every part has arrived. Smaller
+// chunks finish faster on a weak or unstable connection (less time inside
+// any one request for a stall/timeout/drop to hit), and a failed or
+// resumed-after-restart chunk only costs a few seconds of re-upload
+// instead of tens of seconds — this is what actually fixed uploads that
+// were failing every single chunk on a poor connection (see the Render
+// logs: every 32MB chunk was timing out with zero progress). The trade-off
+// is more requests for a given file size, which is a good trade when the
+// bottleneck is reliability, not request overhead. Exported so
 // routes/jobs.js can compute the expected chunk count for a given file
 // size — must match the frontend's CHUNK_SIZE (see frontend/src/api/client.js).
-export const CHUNK_SIZE = Number(process.env.UPLOAD_CHUNK_SIZE || 32 * 1024 * 1024);
+export const CHUNK_SIZE = Number(process.env.UPLOAD_CHUNK_SIZE || 6 * 1024 * 1024);
 
 // The frontend now reads CHUNK_SIZE from the /uploads/init response instead
 // of hardcoding its own copy (see frontend/src/api/client.js), so the two
