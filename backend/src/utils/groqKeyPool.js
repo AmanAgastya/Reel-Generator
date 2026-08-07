@@ -32,6 +32,33 @@ const clients = keys.map((apiKey) => new Groq({ apiKey }));
 
 let roundRobinCounter = 0;
 
+// Per-key pacing gate. Each key gets its own promise chain that tracks
+// "when did the last request on this key fire" - concurrent callers that
+// land on the same key queue up on this chain instead of each reading a
+// stale "last request time" and firing together, which is exactly what let
+// concurrency=4 slam 2 requests onto the same key back-to-back with zero
+// spacing (see the analyzer/transcriber comments for the incident this
+// fixes). This is shared by transcriber.js and analyzer.js since both draw
+// from the same key pool and compete for the same per-key budget.
+const keyGate = clients.map(() => Promise.resolve(0));
+
+async function paceKey(clientIndex, minIntervalMs) {
+  if (!minIntervalMs) return;
+  const myTurn = keyGate[clientIndex].then(async (previousRequestAt) => {
+    const now = Date.now();
+    const earliestAllowed = previousRequestAt + minIntervalMs;
+    if (earliestAllowed > now) {
+      await new Promise((resolve) => setTimeout(resolve, earliestAllowed - now));
+    }
+    return Date.now();
+  });
+  // Swallow rejection here so one caller's downstream error can't wedge the
+  // gate for everyone queued behind it on this key - the actual error still
+  // propagates to that caller via `await myTurn` below.
+  keyGate[clientIndex] = myTurn.catch(() => Date.now());
+  await myTurn;
+}
+
 // Turns a chunk index into a stable number even when it's a string (the
 // transcriber sometimes builds string indices like "0120-a" when a chunk
 // gets split further after a size error) so the same logical chunk always
@@ -53,20 +80,32 @@ function toStableIndex(index) {
  * chunk number, the analysis chunk number) so related work is spread
  * deterministically across keys - with 2 keys, even-numbered chunks
  * always use key A and odd-numbered chunks always use key B, splitting
- * the work list ~evenly between them. Call with no argument for one-off
- * calls (not part of a chunk list) to fall back to simple round-robin.
+ * the work list ~evenly between them. Call with no index (undefined) for
+ * one-off calls (not part of a chunk list) to fall back to simple
+ * round-robin.
+ *
+ * Pass `minIntervalMs` to also gate the call behind that key's pacing
+ * queue - the returned promise won't resolve until at least that long has
+ * passed since the *previous* request on this same key, however many
+ * chunks are running concurrently. Omit it (or pass 0) to skip pacing
+ * entirely, e.g. for callers that already pace themselves.
  */
-export function getGroqClient(index) {
+export async function getGroqClient(index, minIntervalMs) {
   if (!clients.length) {
     throw new Error(
       "No Groq API key configured. Set GROQ_API_KEY (single key) or GROQ_API_KEYS " +
         "(comma-separated, for multiple keys) in your .env."
     );
   }
-  if (clients.length === 1) return clients[0];
 
-  const i = index === undefined ? roundRobinCounter++ : toStableIndex(index);
-  return clients[i % clients.length];
+  const clientIndex =
+    clients.length === 1
+      ? 0
+      : (index === undefined ? roundRobinCounter++ : toStableIndex(index)) % clients.length;
+
+  if (minIntervalMs) await paceKey(clientIndex, minIntervalMs);
+
+  return clients[clientIndex];
 }
 
 export function getGroqKeyCount() {

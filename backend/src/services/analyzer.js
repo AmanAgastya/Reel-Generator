@@ -1,7 +1,7 @@
 import ffmpeg from "fluent-ffmpeg";
 import os from "os";
 import { mapWithConcurrency } from "../utils/concurrency.js";
-import { getGroqClient } from "../utils/groqKeyPool.js";
+import { getGroqClient, getGroqKeyCount } from "../utils/groqKeyPool.js";
 
 // Groq deprecated llama-3.3-70b-versatile on June 17, 2026 (see
 // https://console.groq.com/docs/deprecations) - every analysis call using
@@ -39,15 +39,28 @@ const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 20
 // chance of success. Fail that chunk immediately with a clear error
 // instead of silently burning the retry budget on a wait that can't work.
 const ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS = Number(process.env.ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS || 30);
+// Minimum gap enforced between two requests *on the same Groq key* (see
+// groqKeyPool's paceKey). This used to only be applied as a delay between
+// iterations of a sequential for-loop, so it did nothing once chunks moved
+// to the concurrent path below — with ANALYSIS_CONCURRENCY=4 and 2 keys,
+// 2 chunks landed on the same key back-to-back with zero spacing and blew
+// through its 8000 TPM budget in one shot. It's now passed into every
+// getGroqClient() call instead, so it's enforced per-key regardless of how
+// many chunks are in flight at once.
 const ANALYSIS_MIN_INTERVAL_MS = Number(process.env.ANALYSIS_MIN_INTERVAL_MS || 8000);
 // Transcript chunks are analyzed in parallel. Most jobs only produce a
 // handful of chunks, so a default of 1 (the old behavior) meant every extra
 // chunk added a full LLM round-trip *plus* an 8s artificial delay
 // sequentially — by far the slowest part of the "analyzing" stage for
-// longer videos. 4 concurrent requests stays comfortably under Groq's TPM
-// limits for typical transcript chunk sizes while cutting that stage's
-// time roughly 4x; lower this back to 1 if you're on a low-tier Groq key.
-const ANALYSIS_CONCURRENCY = Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 4));
+// longer videos. Concurrent requests cut that stage's time roughly Nx, but
+// only up to the number of Groq keys configured — beyond that, extra
+// "concurrent" requests just pile onto a key that's already paced by
+// ANALYSIS_MIN_INTERVAL_MS above and gain nothing but the risk of a TPM
+// spike, so this is capped at the key count regardless of the env value.
+const ANALYSIS_CONCURRENCY = Math.min(
+  Math.max(1, Number(process.env.ANALYSIS_CONCURRENCY || 4)),
+  Math.max(1, getGroqKeyCount())
+);
 // The LLM only ever sees text - it has no way to tell a flat, low-energy
 // retelling from a genuinely excited, high-energy moment that reads the
 // same on the page. Weighing each candidate's actual audio loudness in
@@ -125,8 +138,12 @@ Respond ONLY with JSON, no prose, in this exact shape:
     // index (see getGroqClient) - with multiple GROQ_API_KEYS configured,
     // this is what actually splits the analysis work across keys instead
     // of every chunk competing for one key's rate limit/token quota.
-    const completion = await retryAnalysisRequest(() =>
-      getGroqClient(chunkIndex).chat.completions.create({
+    // Passing ANALYSIS_MIN_INTERVAL_MS here is what actually paces
+    // requests *on that specific key* - it resolves only once enough time
+    // has passed since the last request that landed on the same key,
+    // however many chunks are running concurrently.
+    const completion = await retryAnalysisRequest(async () =>
+      (await getGroqClient(chunkIndex, ANALYSIS_MIN_INTERVAL_MS)).chat.completions.create({
         model: ANALYSIS_MODEL,
         messages: [
           { role: "system", content: chunkPrompt },
@@ -388,9 +405,10 @@ Transcript:
 ${clipTranscript}`;
 
   // Single one-off call (not part of a chunk list) - round-robins across
-  // configured keys via getGroqClient() with no index.
-  const completion = await retryAnalysisRequest(() =>
-    getGroqClient().chat.completions.create({
+  // configured keys via getGroqClient() with no index, still paced against
+  // whichever key it lands on.
+  const completion = await retryAnalysisRequest(async () =>
+    (await getGroqClient(undefined, ANALYSIS_MIN_INTERVAL_MS)).chat.completions.create({
       model: ANALYSIS_MODEL,
       messages: [{ role: "system", content: prompt }],
       response_format: { type: "json_object" },
@@ -459,6 +477,12 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
 
   // Chunks are analyzed concurrently (was: sequential await in a for loop,
   // which meant a 4-chunk transcript took 4x as long as it needed to).
+  // The old sequential path had its own `await delay(ANALYSIS_MIN_INTERVAL_MS)`
+  // between iterations, but that's now redundant and has been removed: the
+  // pacing gate inside getGroqClient() enforces ANALYSIS_MIN_INTERVAL_MS per
+  // key on every call regardless of which path runs it, so a single
+  // consistent mechanism paces both instead of two separate ones that could
+  // drift out of sync.
   let chunkResults;
   if (ANALYSIS_CONCURRENCY === 1) {
     chunkResults = [];
@@ -475,9 +499,6 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
         if (error?.isQuotaExhausted) quotaExhaustedError = error;
         if (error?.isModelDecommissioned) modelDecommissionedError = error;
         chunkResults.push([]);
-      }
-      if (chunkIndex < transcriptChunks.length - 1) {
-        await delay(ANALYSIS_MIN_INTERVAL_MS);
       }
     }
   } else {

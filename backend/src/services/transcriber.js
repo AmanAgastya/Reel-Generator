@@ -1,9 +1,8 @@
-
 import fs from "fs";
 import path from "path";
 import { v4 as uuid } from "uuid";
 import ffmpeg from "fluent-ffmpeg";
-import { getGroqClient } from "../utils/groqKeyPool.js";
+import { getGroqClient, getGroqKeyCount } from "../utils/groqKeyPool.js";
 
 // NOTE: "whisper-small" is not a valid Groq model id and was causing every
 // transcription call to fail whenever GROQ_WHISPER_MODEL wasn't explicitly
@@ -22,7 +21,21 @@ const TRANSCRIPTION_MIN_CHUNK_SECONDS = Math.max(180, Number(process.env.TRANSCR
 // across that whole range while staying well within Groq's rate limits at
 // TRANSCRIPTION_CONCURRENCY=4.
 const MAX_TRANSCRIPTION_CHUNKS = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_CHUNKS || 10));
-const TRANSCRIPTION_CONCURRENCY = Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 4));
+// Capped at the configured key count for the same reason as analyzer.js's
+// ANALYSIS_CONCURRENCY: extra "concurrent" chunks beyond one per key just
+// pile onto a key that's already being paced below and add nothing but
+// rate-limit risk.
+const TRANSCRIPTION_CONCURRENCY = Math.min(
+  Math.max(1, Number(process.env.TRANSCRIPTION_CONCURRENCY || 4)),
+  Math.max(1, getGroqKeyCount())
+);
+// Transcription and analysis draw from the same GROQ_API_KEYS pool, so a
+// burst of transcription requests can crowd out the token/rate budget
+// analysis needs on the same key right after. Whisper transcription is
+// billed by audio-seconds rather than prompt tokens, so it can tolerate a
+// shorter gap than analysis's 8s default - this just needs to be enough to
+// smooth out bursts, not eliminate them.
+const TRANSCRIPTION_MIN_INTERVAL_MS = Number(process.env.TRANSCRIPTION_MIN_INTERVAL_MS || 3000);
 const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 1));
 const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 3000);
 const TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS = Number(
@@ -213,7 +226,8 @@ async function retryTranscriptionChunk(audioPath, index) {
   let lastError;
   for (let attempt = 1; attempt <= MAX_TRANSCRIPTION_RETRIES; attempt += 1) {
     try {
-      return await getGroqClient(index).audio.transcriptions.create({
+      const groqClient = await getGroqClient(index, TRANSCRIPTION_MIN_INTERVAL_MS);
+      return await groqClient.audio.transcriptions.create({
         file: fs.createReadStream(audioPath),
         model: WHISPER_MODEL,
         response_format: "verbose_json",

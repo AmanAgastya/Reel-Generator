@@ -26,6 +26,20 @@ export default function JobStatus() {
     let interval;
     let failureCount = 0;
 
+    // A Render free-tier backend that's spinning back up after a restart
+    // (OOM, redeploy, cold start) takes 30-90s to answer again - see
+    // client.js's SESSION_RETRY_DELAY_MS comment for the same situation on
+    // the upload path. The old 5-failures-at-3s-each cutoff (15s) gave up
+    // and showed "Cannot reach the API" well before the server came back,
+    // even though the job itself was still running fine server-side.
+    // 40 failures at 3s comfortably covers that window without leaving a
+    // truly dead backend polling forever.
+    const MAX_POLL_FAILURES = 40;
+    // Don't flash the scary error banner on the first transient blip - only
+    // surface it once a few in a row confirm this isn't just one dropped
+    // request.
+    const ERROR_DISPLAY_THRESHOLD = 3;
+
     async function poll() {
       try {
         const data = await getJob(jobId);
@@ -41,8 +55,20 @@ export default function JobStatus() {
         console.error("[JobStatus] poll failed:", err);
         if (!active) return;
         failureCount += 1;
-        setError(err.response?.data?.error || err.message || "Failed to load job status.");
-        if (failureCount >= 5) {
+
+        // A 404 means this job genuinely doesn't exist - no amount of
+        // retrying fixes that, so stop immediately instead of burning the
+        // full retry window on it.
+        if (err.response?.status === 404) {
+          setError(err.response?.data?.error || "Job not found.");
+          clearInterval(interval);
+          return;
+        }
+
+        if (failureCount >= ERROR_DISPLAY_THRESHOLD) {
+          setError(err.response?.data?.error || err.message || "Failed to load job status.");
+        }
+        if (failureCount >= MAX_POLL_FAILURES) {
           clearInterval(interval);
         }
       }
