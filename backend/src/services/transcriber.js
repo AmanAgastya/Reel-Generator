@@ -50,6 +50,11 @@ const TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS = Number(
 );
 const AUDIO_EXTRACTION_THREADS = Math.max(1, Number(process.env.AUDIO_EXTRACTION_THREADS || 1));
 const AUDIO_BITRATE = process.env.AUDIO_BITRATE || "16k";
+// At 16kbps mono, even a couple of real seconds of audio is a few KB - an
+// output this small is effectively guaranteed to be an empty/near-empty
+// extraction, not genuine content, so it's not worth spending a Groq
+// Whisper call on. See extractAudioChunk.
+const MIN_VALID_AUDIO_CHUNK_BYTES = Math.max(256, Number(process.env.MIN_VALID_AUDIO_CHUNK_BYTES || 2048));
 
 /**
  * Transcribes a video/audio file using Groq's hosted Whisper and returns
@@ -106,12 +111,17 @@ export async function transcribeVideo(filePath, onProgress = async () => {}) {
 
 async function transcribeVideoRange(videoPath, chunkRoot, start, duration, index) {
   const chunkPath = path.join(chunkRoot, `${String(index).padStart(4, "0")}.mp3`);
-  await extractAudioChunk(videoPath, chunkPath, start, duration);
   return await transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, chunkPath, index);
 }
 
 async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, duration, audioPath, index) {
   try {
+    // Extraction lives inside this try (rather than being awaited by the
+    // caller beforehand) so a failure here - including the empty-output
+    // case handled in extractAudioChunk - gets the exact same per-chunk
+    // tolerance as a Whisper API failure below, instead of bypassing it
+    // and taking the whole job down.
+    await extractAudioChunk(videoPath, audioPath, start, duration);
     // Each chunk is assigned to a Groq client by its chunk index (see
     // getGroqClient) - with multiple GROQ_API_KEYS configured, this is
     // what actually splits transcription work across keys instead of
@@ -129,19 +139,19 @@ async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, durati
     }
     // A chunk that still fails after retryTranscriptionChunk's retries
     // used to take the whole job down with it - one bad ~10min stretch
-    // (a Groq blip that outlasted the retry window, or a chunk landing on
-    // a moment of near-silence that the API chokes on) meant the user got
-    // "Something went wrong" with nothing to show, even though every other
-    // chunk transcribed fine. analyzeBestMoments already tolerates a
-    // single failed analysis chunk the same way - skip it, keep going, and
-    // only fail the whole job at the top level if EVERY chunk came back
-    // empty (see the `!segments.length` check in transcribeVideo). A
-    // genuine account-level failure (isQuotaExhausted - the whole key pool
-    // has no tokens/audio-seconds left) is excluded from this: every other
-    // chunk would fail identically anyway, so surfacing that clearly and
-    // failing fast is more honest than silently returning a transcript
-    // with the last chunk missing.
-    if (!error?.isQuotaExhausted && isRecoverableTranscriptionError(error)) {
+    // (a Groq blip that outlasted the retry window, a chunk landing past
+    // the video's real playable end, or a chunk hitting a moment of
+    // near-silence the API chokes on) meant the user got "Something went
+    // wrong" with nothing to show, even though every other chunk
+    // transcribed fine. analyzeBestMoments already tolerates a single
+    // failed analysis chunk the same way - skip it, keep going, and only
+    // fail the whole job at the top level if EVERY chunk came back empty
+    // (see the `!segments.length` check in transcribeVideo). A genuine
+    // account-level failure (isQuotaExhausted - the whole key pool has no
+    // tokens/audio-seconds left) is excluded from this: every other chunk
+    // would fail identically anyway, so surfacing that clearly and failing
+    // fast is more honest than silently returning a transcript with gaps.
+    if (error?.isEmptyAudioChunk || (!error?.isQuotaExhausted && isRecoverableTranscriptionError(error))) {
       console.warn(
         `[transcriber] chunk ${index} (${start}s-${Math.round(start + duration)}s) still failed after retries and will be skipped: ${error.message}`
       );
@@ -243,7 +253,37 @@ function extractAudioChunk(videoPath, outputPath, start, duration) {
       .audioBitrate(AUDIO_BITRATE)
       .format("mp3")
       .outputOptions([`-threads ${AUDIO_EXTRACTION_THREADS}`])
-      .on("end", resolve)
+      .on("end", async () => {
+        // ffmpeg can report "end" (exit 0-ish / no "error" event) while
+        // having encoded literally nothing - "Output file is empty,
+        // nothing was encoded (check -ss / -t / -frames parameters if
+        // used)". That happens when `start` (-ss) lands at or past the
+        // source file's actual playable end: the requested chunk range was
+        // built off the video's reported duration, but a download that's
+        // truncated, or a container whose metadata overstates its real
+        // length, can leave the tail past that point with no real frames
+        // to extract. Uploading a 0-byte "audio" file to Groq's Whisper
+        // endpoint next produces a bare, confusing `500 Internal Server
+        // Error` with no indication anything was wrong with the input -
+        // catching the empty file here, before it ever reaches Groq, turns
+        // that into a clear, specific, and (per transcribeSegmentWithFallback)
+        // safely skippable error instead.
+        try {
+          const stats = await fs.promises.stat(outputPath);
+          if (stats.size < MIN_VALID_AUDIO_CHUNK_BYTES) {
+            const error = new Error(
+              `Extracted audio chunk is empty (${stats.size} bytes) - the source video may not extend this far, or has no audio in this range.`
+            );
+            error.isEmptyAudioChunk = true;
+            reject(error);
+            return;
+          }
+        } catch (statError) {
+          reject(statError);
+          return;
+        }
+        resolve();
+      })
       .on("error", reject)
       .save(outputPath);
   });
