@@ -3,7 +3,7 @@ import path from "path";
 import fs from "fs/promises";
 import crypto from "crypto";
 import { createReadStream, createWriteStream } from "fs";
-import { pipeline } from "stream/promises";
+import { once } from "events";
 import Job from "../models/Job.js";
 import Clip from "../models/Clip.js";
 import { upload, uploadChunk, MAX_UPLOAD_FILE_SIZE, CHUNK_SIZE } from "../middleware/upload.js";
@@ -133,11 +133,30 @@ router.post("/uploads/:uploadId/complete", asyncHandler(async (req, res) => {
     // for the whole assembly and never buffers more than a stream's
     // internal chunk size at once, which is both faster and lighter on
     // memory for large, many-chunk uploads.
+    //
+    // stream/promises' pipeline() attaches its own 'error'/'close'/'finish'/
+    // 'end' listeners to every stream it's given, including the
+    // destination, to track completion - and with `end: false` (needed
+    // here since the destination has to stay open across many source
+    // parts) it never got the chance to tear those listeners back down
+    // between calls. Calling pipeline() once per chunk against the same
+    // long-lived outStream meant every chunk left another set of listeners
+    // behind, which is exactly the MaxListenersExceededWarning ("11 error
+    // listeners", "11 close listeners", ...) seen in production - not a
+    // functional bug yet, but on a job with more than ~10 chunks it would
+    // start silently swallowing events past Node's default cap.
+    //
+    // Writing directly with the destination's own backpressure signal
+    // (write() / 'drain') never attaches anything to outStream at all, so
+    // there's nothing to leak regardless of how many parts are assembled.
     const outStream = createWriteStream(outputPath, { flags: "wx" });
     try {
       for (let index = 0; index < totalChunks; index += 1) {
         const part = path.join(dir, `${String(index).padStart(6, "0")}.part`);
-        await pipeline(createReadStream(part), outStream, { end: false });
+        const partStream = createReadStream(part);
+        for await (const chunk of partStream) {
+          if (!outStream.write(chunk)) await once(outStream, "drain");
+        }
       }
     } finally {
       outStream.end();

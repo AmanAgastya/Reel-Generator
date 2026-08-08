@@ -1,4 +1,3 @@
-import os from "os";
 import Job from "../models/Job.js";
 import Clip from "../models/Clip.js";
 import { downloadYouTubeVideo } from "../services/downloader.js";
@@ -7,6 +6,7 @@ import { analyzeBestMoments } from "../services/analyzer.js";
 import { renderClip, probeVideoDimensions } from "../services/clipper.js";
 import { safeDeleteFile } from "../utils/cleanup.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
+import { getEffectiveCpuCount } from "../utils/cpuLimit.js";
 
 const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS || 1));
 // Each clip render is an independent ffmpeg encode of a short (15-60s)
@@ -15,9 +15,19 @@ const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS |
 // a big box doesn't thrash on disk I/O) instead of the old hardcoded cap of
 // 2 — see CLIP_RENDER_THREADS in clipper.js, which is sized to divide the
 // remaining cores across these concurrent renders.
+//
+// getEffectiveCpuCount() (not the raw os.cpus() host count) is what this is
+// sized off of - see cpuLimit.js for why. On a CPU-throttled deploy target
+// like Render's free tier, os.cpus() was reporting the host's full core
+// count while the container was actually capped at a sliver of one CPU, so
+// this was launching several concurrent ffmpeg encodes that all had to
+// fight over that same tiny slice - each one starved of CPU time by the
+// others, which is what made rendering feel disproportionately slow. On an
+// unthrottled machine (dev laptop, a paid box) getEffectiveCpuCount() just
+// falls back to the host core count, so behavior there is unchanged.
 const CLIP_RENDER_CONCURRENCY = Math.max(
   1,
-  Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(4, os.cpus().length))
+  Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(4, getEffectiveCpuCount()))
 );
 const queuedJobIds = [];
 const activeJobIds = new Set();

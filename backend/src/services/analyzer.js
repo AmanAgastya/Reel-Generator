@@ -1,7 +1,7 @@
 import ffmpeg from "fluent-ffmpeg";
-import os from "os";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import { getGroqClient, getGroqKeyCount } from "../utils/groqKeyPool.js";
+import { getEffectiveCpuCount } from "../utils/cpuLimit.js";
 
 // Groq deprecated llama-3.3-70b-versatile on June 17, 2026 (see
 // https://console.groq.com/docs/deprecations) - every analysis call using
@@ -69,7 +69,9 @@ const ANALYSIS_CONCURRENCY = Math.min(
 // minority weight (see blendScores below) since the LLM's read on content
 // quality still matters more than raw volume.
 const AUDIO_ENERGY_WEIGHT = Math.max(0, Math.min(1, Number(process.env.AUDIO_ENERGY_WEIGHT ?? 0.3)));
-const AUDIO_ENERGY_CONCURRENCY = Math.max(1, Number(process.env.AUDIO_ENERGY_CONCURRENCY || Math.min(6, os.cpus().length)));
+// getEffectiveCpuCount() (not raw os.cpus()) so this doesn't oversubscribe
+// a CPU-throttled host either - see cpuLimit.js.
+const AUDIO_ENERGY_CONCURRENCY = Math.max(1, Number(process.env.AUDIO_ENERGY_CONCURRENCY || Math.min(6, getEffectiveCpuCount())));
 
 function buildTranscriptLines(segments) {
   return segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);

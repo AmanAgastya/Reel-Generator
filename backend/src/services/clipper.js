@@ -1,11 +1,17 @@
 import ffmpeg from "fluent-ffmpeg";
 import path from "path";
 import fs from "fs";
-import os from "os";
 import { v4 as uuid } from "uuid";
+import { getEffectiveCpuCount } from "../utils/cpuLimit.js";
 
 const STORAGE_DIR = path.resolve(process.env.STORAGE_DIR || "./storage");
 
+// DEFAULT_RENDER_CONCURRENCY/CLIP_RENDER_THREADS are sized off
+// getEffectiveCpuCount() rather than the host's raw core count (see
+// cpuLimit.js) - on a CPU-throttled container like Render's free tier this
+// is what stops renders from oversubscribing the tiny real CPU share and
+// grinding to a crawl.
+//
 // "ultrafast" trades a little compression efficiency for the fastest
 // possible encode — worth it since clips are short (15-60s) and total job
 // turnaround matters more here than shaving a few KB off file size.
@@ -17,10 +23,10 @@ const CLIP_VIDEO_CRF = Number(process.env.CLIP_VIDEO_CRF || 28);
 // across the expected concurrency instead of hardcoding 1 thread — a real
 // speedup on any multi-core host, while still capping out safely on a
 // single-core box.
-const DEFAULT_RENDER_CONCURRENCY = Math.max(1, Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(4, os.cpus().length)));
+const DEFAULT_RENDER_CONCURRENCY = Math.max(1, Number(process.env.CLIP_RENDER_CONCURRENCY || Math.min(4, getEffectiveCpuCount())));
 const CLIP_RENDER_THREADS = Math.max(
   1,
-  Number(process.env.CLIP_RENDER_THREADS || Math.floor(os.cpus().length / DEFAULT_RENDER_CONCURRENCY))
+  Number(process.env.CLIP_RENDER_THREADS || Math.floor(getEffectiveCpuCount() / DEFAULT_RENDER_CONCURRENCY))
 );
 const CLIP_AUDIO_BITRATE = process.env.CLIP_AUDIO_BITRATE || "64k";
 
