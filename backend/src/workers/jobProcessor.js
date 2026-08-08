@@ -91,11 +91,25 @@ export async function processJob(jobId) {
     job.status = "transcribing";
     job.progress = 15;
     await job.save();
+    // transcribeVideo's progress callback fires once per transcription
+    // chunk, and those chunks run TRANSCRIPTION_CONCURRENCY-at-a-time (see
+    // transcriber.js) - so several chunks can finish within the same tick
+    // and call this callback concurrently. Calling `job.save()` directly
+    // here let multiple saves race on the same in-memory document, which
+    // is exactly what Mongoose's "Can't save() the same doc multiple times
+    // in parallel" (ParallelSaveError) is reporting. Chained through the
+    // same saveChain pattern used for the clip-rendering loop below so
+    // concurrent progress updates queue up and save one at a time instead.
+    let transcribeSaveChain = Promise.resolve();
     const transcript = await transcribeVideo(sourceFilePath, async (percent) => {
       job.status = "transcribing";
       job.progress = 15 + Math.round(percent * 25);
-      await job.save();
+      transcribeSaveChain = transcribeSaveChain
+        .then(() => job.save())
+        .catch((e) => console.error("[job] transcription progress save failed:", e));
+      return transcribeSaveChain;
     });
+    await transcribeSaveChain;
     job.transcript = transcript;
     job.videoDurationSeconds = Math.max(
       0,
