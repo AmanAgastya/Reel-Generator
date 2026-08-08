@@ -152,6 +152,20 @@ Respond ONLY with JSON, no prose, in this exact shape:
         response_format: { type: "json_object" },
         temperature: 0.2,
         max_tokens: maxTokensForChunk,
+        // openai/gpt-oss-120b is a reasoning model: by default it spends an
+        // unbounded, invisible chunk of max_tokens on hidden reasoning
+        // before it ever writes the JSON answer. On a small max_tokens
+        // budget that reasoning alone can eat the whole allowance, so the
+        // response gets cut off mid-JSON and Groq rejects it with
+        // "Failed to validate JSON" (failed_generation empty - there was no
+        // visible completion to show). It also inflates the token count
+        // counted against the 8000 TPM limit on this account, which is what
+        // was tripping the "Request too large ... tokens per minute" 413s
+        // above. Capping reasoning effort to "low" leaves the model's
+        // actual budget for the JSON output intact and shrinks the
+        // per-request token footprint, without touching clip count, prompt
+        // rules, or any other analysis behavior.
+        reasoning_effort: "low",
       })
     );
     const parsed = JSON.parse(completion.choices[0].message.content || "{}");
@@ -193,6 +207,14 @@ async function retryAnalysisRequest(fn) {
       lastError = error;
       const message = String(error?.message || "").toLowerCase();
       const isRateLimit = message.includes("rate limit");
+      // A "request too large ... tokens per minute" 413 is deterministic for
+      // that exact request size - retrying the same payload after a fixed
+      // delay just reproduces the identical 413 and burns a retry (and the
+      // daily quota) for nothing. analyzeTranscriptChunk's own catch already
+      // knows how to recover from this by splitting the transcript in half,
+      // so hand it off immediately instead of wasting an attempt here.
+      const isSizeError = message.includes("request too large") || message.includes("413");
+      if (isSizeError) throw error;
 
       // Groq periodically retires models (see
       // console.groq.com/docs/deprecations). A decommissioned model fails
