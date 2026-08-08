@@ -12,7 +12,7 @@ import { getEffectiveCpuCount } from "../utils/cpuLimit.js";
 // visible error. openai/gpt-oss-120b is Groq's recommended replacement.
 const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "openai/gpt-oss-120b";
 
-const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
+const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 25);
 // Was 60 - clips were consistently coming back around 20s even with that
 // much headroom because nothing in the prompt told the model it was
 // *allowed* to run long; "self-contained moment" on its own reads as "keep
@@ -23,7 +23,7 @@ const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
 // this ceiling) instead of trimming for its own sake - so a quick one-liner
 // still comes back short, but a longer story, riff, or explanation is now
 // free to actually use the full 90s when the content calls for it.
-const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 90);
+const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 130);
 // Every job should produce at least 8 clips and, for longer source videos,
 // as many as 30 — the analyzer scales the actual requested count between
 // these two bounds based on the source video's duration (see
