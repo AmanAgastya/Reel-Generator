@@ -36,7 +36,14 @@ const TRANSCRIPTION_CONCURRENCY = Math.min(
 // shorter gap than analysis's 8s default - this just needs to be enough to
 // smooth out bursts, not eliminate them.
 const TRANSCRIPTION_MIN_INTERVAL_MS = Number(process.env.TRANSCRIPTION_MIN_INTERVAL_MS || 3000);
-const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 1));
+// Was defaulting to 1, which made this loop's "retry" a no-op: with
+// `for (attempt = 1; attempt <= 1; ...)` it runs exactly once and exits, so
+// a one-off transient blip - like Groq occasionally returning a bare
+// `500 Internal Server Error` with no other detail, which normally just
+// needs a second attempt to go through - failed the whole job immediately
+// instead of ever getting retried. Matches MAX_ANALYSIS_RETRIES' default
+// of 2 in analyzer.js, which has the identical retry-loop shape.
+const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 2));
 const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 3000);
 const TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS = Number(
   process.env.TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS || 30
