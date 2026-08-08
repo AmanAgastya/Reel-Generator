@@ -127,6 +127,26 @@ async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, durati
       const right = await transcribeVideoRange(videoPath, chunkRoot, start + half, duration - half, `${String(start + half).padStart(4, "0")}-b`);
       return [...left, ...right];
     }
+    // A chunk that still fails after retryTranscriptionChunk's retries
+    // used to take the whole job down with it - one bad ~10min stretch
+    // (a Groq blip that outlasted the retry window, or a chunk landing on
+    // a moment of near-silence that the API chokes on) meant the user got
+    // "Something went wrong" with nothing to show, even though every other
+    // chunk transcribed fine. analyzeBestMoments already tolerates a
+    // single failed analysis chunk the same way - skip it, keep going, and
+    // only fail the whole job at the top level if EVERY chunk came back
+    // empty (see the `!segments.length` check in transcribeVideo). A
+    // genuine account-level failure (isQuotaExhausted - the whole key pool
+    // has no tokens/audio-seconds left) is excluded from this: every other
+    // chunk would fail identically anyway, so surfacing that clearly and
+    // failing fast is more honest than silently returning a transcript
+    // with the last chunk missing.
+    if (!error?.isQuotaExhausted && isRecoverableTranscriptionError(error)) {
+      console.warn(
+        `[transcriber] chunk ${index} (${start}s-${Math.round(start + duration)}s) still failed after retries and will be skipped: ${error.message}`
+      );
+      return [];
+    }
     throw error;
   }
 }
