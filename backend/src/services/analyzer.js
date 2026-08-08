@@ -38,7 +38,18 @@ const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 20
 // it out inline would block the job for potentially over an hour with no
 // chance of success. Fail that chunk immediately with a clear error
 // instead of silently burning the retry budget on a wait that can't work.
-const ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS = Number(process.env.ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS || 30);
+//
+// This has to sit ABOVE 60s: Groq's TPM (tokens-per-minute) bucket is a
+// rolling one-minute window, so a transient per-minute limit can
+// legitimately report a reset anywhere up to ~60s away (worst case: you
+// hit the cap right after the window opened). A previous default of 30s
+// was misreading a completely ordinary "reset in 45s" per-minute limit -
+// confirmed by Groq's own `x-ratelimit-reset-tokens` response header
+// showing the same ~59s-or-under window - as if it were the daily cap, and
+// failing the whole job on the spot instead of just waiting the ~45s out.
+// Only a wait that's actually impossible from a one-minute bucket (minutes
+// or hours away) is real evidence of the daily/monthly quota.
+const ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS = Number(process.env.ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS || 65);
 // Minimum gap enforced between two requests *on the same Groq key* (see
 // groqKeyPool's paceKey). This used to only be applied as a delay between
 // iterations of a sequential for-loop, so it did nothing once chunks moved
