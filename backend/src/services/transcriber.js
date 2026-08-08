@@ -43,7 +43,7 @@ const TRANSCRIPTION_MIN_INTERVAL_MS = Number(process.env.TRANSCRIPTION_MIN_INTER
 // needs a second attempt to go through - failed the whole job immediately
 // instead of ever getting retried. Matches MAX_ANALYSIS_RETRIES' default
 // of 2 in analyzer.js, which has the identical retry-loop shape.
-const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 2));
+const MAX_TRANSCRIPTION_RETRIES = Math.max(1, Number(process.env.MAX_TRANSCRIPTION_RETRIES || 3));
 const TRANSCRIPTION_RETRY_DELAY_MS = Number(process.env.TRANSCRIPTION_RETRY_DELAY_MS || 3000);
 const TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS = Number(
   process.env.TRANSCRIPTION_MAX_AUTO_RETRY_WAIT_SECONDS || 30
@@ -328,8 +328,20 @@ async function retryTranscriptionChunk(audioPath, index) {
         console.warn(`[transcriber] rate limit hit, waiting ${wait}s before retrying...`);
         await new Promise((resolve) => setTimeout(resolve, wait * 1000));
       } else {
-        console.warn(`[transcriber] transcription attempt ${attempt} failed: ${error.message}. Retrying...`);
-        await new Promise((resolve) => setTimeout(resolve, TRANSCRIPTION_RETRY_DELAY_MS));
+        // Fixed 3s between attempts wasn't giving these enough room:
+        // observed logs show the SAME chunk indices of the SAME video
+        // failing identically across entirely separate job runs minutes
+        // apart, which isn't what pure random network flakiness looks
+        // like - it's consistent with Groq's backend having a harder time
+        // with that specific audio content (long non-speech/musical
+        // stretches, in this app's case) and needing more than a few
+        // seconds before a retry has a real chance of landing differently.
+        // Backing off exponentially (3s, 9s, 27s, ...) gives later
+        // attempts meaningfully more separation without punishing the
+        // common case where attempt 2 succeeds quickly anyway.
+        const backoffMs = TRANSCRIPTION_RETRY_DELAY_MS * 3 ** (attempt - 1);
+        console.warn(`[transcriber] transcription attempt ${attempt} failed: ${error.message}. Retrying in ${Math.round(backoffMs / 1000)}s...`);
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
       }
     }
   }
