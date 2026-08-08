@@ -13,7 +13,17 @@ import { getEffectiveCpuCount } from "../utils/cpuLimit.js";
 const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "openai/gpt-oss-120b";
 
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 15);
-const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 60);
+// Was 60 - clips were consistently coming back around 20s even with that
+// much headroom because nothing in the prompt told the model it was
+// *allowed* to run long; "self-contained moment" on its own reads as "keep
+// it tight", so it defaulted to trimming every clip down to the shortest
+// span that still made sense rather than using the room it had. Raised the
+// ceiling itself to 90s and paired it with an explicit rule below telling
+// the model to size each clip to how long the actual moment runs (up to
+// this ceiling) instead of trimming for its own sake - so a quick one-liner
+// still comes back short, but a longer story, riff, or explanation is now
+// free to actually use the full 90s when the content calls for it.
+const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 90);
 // Every job should produce at least 8 clips and, for longer source videos,
 // as many as 30 — the analyzer scales the actual requested count between
 // these two bounds based on the source video's duration (see
@@ -123,6 +133,7 @@ Rules:
 - Identify the strongest standalone moments in this transcript chunk, and return up to ${maxClips} of them.
 - If the chunk contains enough strong moments, return the full ${maxClips}.
 - Each moment must make sense on its own without earlier context.
+- Size each clip's start/end to however long the actual moment naturally takes to land - a quick punchline can stay short, but a story, riff, explanation, or anything that needs setup and a payoff should run as long as it takes, up to ${MAX_CLIP_SECONDS}s. Do not trim a clip down to the shortest span that "technically" makes sense - if extending it captures a better, fuller moment, extend it. Vary durations across the ${maxClips} clips rather than defaulting every one to the same short length.
 - start/end must be real timestamps drawn from the transcript, snapped to natural sentence boundaries.
 - Write a short, punchy caption (under 80 characters) for each clip. Make the caption feel like a strong social hook for a short-form video, specific to this exact moment, and avoid vague copy like "Key moment" or "Watch this".
 - Suggest 3-5 relevant hashtags per clip (no # symbol, just the words).

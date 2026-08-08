@@ -81,7 +81,7 @@ services:
       - key: MIN_CLIP_SECONDS
         value: "15"
       - key: MAX_CLIP_SECONDS
-        value: "60"
+        value: "90"
       - key: MIN_CLIPS_PER_JOB
         value: "8"
       - key: MAX_CLIPS_PER_JOB
