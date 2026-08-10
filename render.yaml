@@ -7,20 +7,6 @@ services:
     plan: free
     region: oregon
     healthCheckPath: /api/health
-    # No `disk:` block — Render's free plan does not support attaching a
-    # persistent disk (paid plans only). This app now relies entirely on
-    # ephemeral container storage plus its own cleanup: each job deletes
-    # its source video as soon as it finishes (success OR failure — see
-    # workers/jobProcessor.js), and a periodic sweep on the server itself
-    # (see server.js, STORAGE_MAX_AGE_MINUTES below) clears anything older
-    # than an hour as a backstop. That's a deliberate trade-off for the
-    # free plan: storage/ is wiped on every deploy/restart and only
-    # persists for as long as the instance stays up between them (up to
-    # 15 minutes of inactivity — see the Cold starts note below), so treat
-    # rendered clips as temporary and download them promptly rather than
-    # relying on them staying on the server. If you ever move to a paid
-    # plan and want clips to survive restarts, add back a `disk:` block
-    # mounted at /app/storage.
     envVars:
       - key: NODE_ENV
         value: production
@@ -79,9 +65,9 @@ services:
       - key: YTDLP_CONCURRENT_FRAGMENTS
         value: "4" # lower than the default 16 — 0.1 CPU can't usefully parallelize much more
       - key: MIN_CLIP_SECONDS
-        value: "25"
+        value: "30"
       - key: MAX_CLIP_SECONDS
-        value: "130"
+        value: "120"
       - key: MIN_CLIPS_PER_JOB
         value: "8"
       - key: MAX_CLIPS_PER_JOB
