@@ -3,20 +3,11 @@ import path from "path";
 import { v4 as uuid } from "uuid";
 import ffmpeg from "fluent-ffmpeg";
 import { getGroqClient, getGroqKeyCount } from "../utils/groqKeyPool.js";
-
-// NOTE: "whisper-small" is not a valid Groq model id and was causing every
-// transcription call to fail whenever GROQ_WHISPER_MODEL wasn't explicitly
-// set. Default to the same model documented in .env.example.
 const WHISPER_MODEL = process.env.GROQ_WHISPER_MODEL || "whisper-large-v3";
 const TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS = Math.max(60, Number(process.env.TRANSCRIPTION_FULL_DURATION_LIMIT_SECONDS || 1200));
 const TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES = Math.max(1, Number(process.env.TRANSCRIPTION_FULL_FILE_SIZE_LIMIT_BYTES || 25 * 1024 * 1024));
 const TRANSCRIPTION_CHUNK_SECONDS = Math.max(300, Number(process.env.TRANSCRIPTION_CHUNK_SECONDS || 600));
 const TRANSCRIPTION_MIN_CHUNK_SECONDS = Math.max(180, Number(process.env.TRANSCRIPTION_MIN_CHUNK_SECONDS || 300));
-// More, smaller chunks transcribed in parallel finish faster than a couple
-// of huge ones — Groq's Whisper endpoint is network/API-bound, not local
-// CPU-bound, so there's little cost to fanning a long video out into more
-// concurrent requests.
-// 30min-2hr source videos need more than a couple of chunks to stay under
 // TRANSCRIPTION_CHUNK_SECONDS per request; 10 keeps chunk sizes reasonable
 // across that whole range while staying well within Groq's rate limits at
 // TRANSCRIPTION_CONCURRENCY=4.
@@ -131,26 +122,46 @@ async function transcribeSegmentWithFallback(videoPath, chunkRoot, start, durati
   } catch (error) {
     const message = String(error?.message || "").toLowerCase();
     const isSizeError = message.includes("request entity too large") || message.includes("413");
-    if (duration > TRANSCRIPTION_MIN_CHUNK_SECONDS && isSizeError) {
+    // Previously this split-and-retry only fired for 413 size errors, so a
+    // chunk that kept coming back with a bare 500 "Internal Server Error"
+    // after exhausting retryTranscriptionChunk's retries went straight to
+    // being skipped outright - dropping a whole ~10-20min stretch of
+    // transcript (see the "chunk 5 ... skipped" log). A 500 that survives
+    // exponential backoff at full chunk size doesn't necessarily mean the
+    // same audio content fails at every size - Groq's Whisper endpoint has
+    // been observed to choke on specific long stretches (heavy music,
+    // near-silence, codec quirks) that a smaller, more targeted request can
+    // sometimes get through. Giving recoverable errors (not just size
+    // errors) one shot at being split into two halves - each retried
+    // independently with its own fresh retry budget - meaningfully
+    // improves transcript coverage before falling back to skipping.
+    // isEmptyAudioChunk is excluded: an empty extraction just means there's
+    // no audio in that range at all, so splitting it can't help.
+    const isRetryableBySplit =
+      !error?.isQuotaExhausted &&
+      !error?.isEmptyAudioChunk &&
+      (isSizeError || isRecoverableTranscriptionError(error));
+    if (duration > TRANSCRIPTION_MIN_CHUNK_SECONDS && isRetryableBySplit) {
       const half = Math.max(TRANSCRIPTION_MIN_CHUNK_SECONDS, Math.floor(duration / 2));
       const left = await transcribeVideoRange(videoPath, chunkRoot, start, half, `${String(start).padStart(4, "0")}-a`);
       const right = await transcribeVideoRange(videoPath, chunkRoot, start + half, duration - half, `${String(start + half).padStart(4, "0")}-b`);
       return [...left, ...right];
     }
-    // A chunk that still fails after retryTranscriptionChunk's retries
-    // used to take the whole job down with it - one bad ~10min stretch
-    // (a Groq blip that outlasted the retry window, a chunk landing past
-    // the video's real playable end, or a chunk hitting a moment of
-    // near-silence the API chokes on) meant the user got "Something went
-    // wrong" with nothing to show, even though every other chunk
-    // transcribed fine. analyzeBestMoments already tolerates a single
-    // failed analysis chunk the same way - skip it, keep going, and only
-    // fail the whole job at the top level if EVERY chunk came back empty
-    // (see the `!segments.length` check in transcribeVideo). A genuine
-    // account-level failure (isQuotaExhausted - the whole key pool has no
-    // tokens/audio-seconds left) is excluded from this: every other chunk
-    // would fail identically anyway, so surfacing that clearly and failing
-    // fast is more honest than silently returning a transcript with gaps.
+    // A chunk that still fails after retryTranscriptionChunk's retries (and
+    // the split-and-retry above) used to take the whole job down with it -
+    // one bad ~10min stretch (a Groq blip that outlasted the retry window,
+    // a chunk landing past the video's real playable end, or a chunk
+    // hitting a moment of near-silence the API chokes on) meant the user
+    // got "Something went wrong" with nothing to show, even though every
+    // other chunk transcribed fine. analyzeBestMoments already tolerates a
+    // single failed analysis chunk the same way - skip it, keep going, and
+    // only fail the whole job at the top level if EVERY chunk came back
+    // empty (see the `!segments.length` check in transcribeVideo). A
+    // genuine account-level failure (isQuotaExhausted - the whole key pool
+    // has no tokens/audio-seconds left) is excluded from this: every other
+    // chunk would fail identically anyway, so surfacing that clearly and
+    // failing fast is more honest than silently returning a transcript
+    // with gaps.
     if (error?.isEmptyAudioChunk || (!error?.isQuotaExhausted && isRecoverableTranscriptionError(error))) {
       console.warn(
         `[transcriber] chunk ${index} (${start}s-${Math.round(start + duration)}s) still failed after retries and will be skipped: ${error.message}`
