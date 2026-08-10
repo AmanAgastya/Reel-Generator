@@ -2,28 +2,10 @@ import ffmpeg from "fluent-ffmpeg";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import { getGroqClient, getGroqKeyCount } from "../utils/groqKeyPool.js";
 import { getEffectiveCpuCount } from "../utils/cpuLimit.js";
-
-// Groq deprecated llama-3.3-70b-versatile on June 17, 2026 (see
-// https://console.groq.com/docs/deprecations) - every analysis call using
-// the old default was failing with a "model_decommissioned" error, which
-// wasn't recognized as a special case below, so every chunk silently
-// failed and analyzeBestMoments fell back to returning a single generic
-// clip. This is what produced "only 1 clip from a 1-hour video" with no
-// visible error. openai/gpt-oss-120b is Groq's recommended replacement.
 const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "openai/gpt-oss-120b";
 
-const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 25);
-// Was 60 - clips were consistently coming back around 20s even with that
-// much headroom because nothing in the prompt told the model it was
-// *allowed* to run long; "self-contained moment" on its own reads as "keep
-// it tight", so it defaulted to trimming every clip down to the shortest
-// span that still made sense rather than using the room it had. Raised the
-// ceiling itself to 90s and paired it with an explicit rule below telling
-// the model to size each clip to how long the actual moment runs (up to
-// this ceiling) instead of trimming for its own sake - so a quick one-liner
-// still comes back short, but a longer story, riff, or explanation is now
-// free to actually use the full 90s when the content calls for it.
-const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 130);
+const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 30);
+const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 120);
 // Every job should produce at least 8 clips and, for longer source videos,
 // as many as 30 — the analyzer scales the actual requested count between
 // these two bounds based on the source video's duration (see
@@ -43,22 +25,6 @@ const MAX_CANDIDATE_CLIPS_PER_CHUNK = Number(process.env.MAX_CANDIDATE_CLIPS_PER
 const CHUNK_OVERLAP_LINES = Number(process.env.CHUNK_OVERLAP_LINES || 3);
 const MAX_ANALYSIS_RETRIES = Math.max(1, Number(process.env.MAX_ANALYSIS_RETRIES || 2));
 const ANALYSIS_RETRY_DELAY_MS = Number(process.env.ANALYSIS_RETRY_DELAY_MS || 2000);
-// If Groq reports a rate-limit reset longer than this, it's almost always
-// a daily/monthly token quota (not a transient per-minute limit) - waiting
-// it out inline would block the job for potentially over an hour with no
-// chance of success. Fail that chunk immediately with a clear error
-// instead of silently burning the retry budget on a wait that can't work.
-//
-// This has to sit ABOVE 60s: Groq's TPM (tokens-per-minute) bucket is a
-// rolling one-minute window, so a transient per-minute limit can
-// legitimately report a reset anywhere up to ~60s away (worst case: you
-// hit the cap right after the window opened). A previous default of 30s
-// was misreading a completely ordinary "reset in 45s" per-minute limit -
-// confirmed by Groq's own `x-ratelimit-reset-tokens` response header
-// showing the same ~59s-or-under window - as if it were the daily cap, and
-// failing the whole job on the spot instead of just waiting the ~45s out.
-// Only a wait that's actually impossible from a one-minute bucket (minutes
-// or hours away) is real evidence of the daily/monthly quota.
 const ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS = Number(process.env.ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS || 65);
 // Minimum gap enforced between two requests *on the same Groq key* (see
 // groqKeyPool's paceKey). This used to only be applied as a delay between
@@ -69,13 +35,6 @@ const ANALYSIS_MAX_AUTO_RETRY_WAIT_SECONDS = Number(process.env.ANALYSIS_MAX_AUT
 // getGroqClient() call instead, so it's enforced per-key regardless of how
 // many chunks are in flight at once.
 const ANALYSIS_MIN_INTERVAL_MS = Number(process.env.ANALYSIS_MIN_INTERVAL_MS || 8000);
-// Transcript chunks are analyzed in parallel. Most jobs only produce a
-// handful of chunks, so a default of 1 (the old behavior) meant every extra
-// chunk added a full LLM round-trip *plus* an 8s artificial delay
-// sequentially — by far the slowest part of the "analyzing" stage for
-// longer videos. Concurrent requests cut that stage's time roughly Nx, but
-// only up to the number of Groq keys configured — beyond that, extra
-// "concurrent" requests just pile onto a key that's already paced by
 // ANALYSIS_MIN_INTERVAL_MS above and gain nothing but the risk of a TPM
 // spike, so this is capped at the key count regardless of the env value.
 const ANALYSIS_CONCURRENCY = Math.min(
@@ -453,17 +412,25 @@ ${clipTranscript}`;
   // Single one-off call (not part of a chunk list) - round-robins across
   // configured keys via getGroqClient() with no index, still paced against
   // whichever key it lands on.
+
   const completion = await retryAnalysisRequest(async () =>
     (await getGroqClient(undefined, ANALYSIS_MIN_INTERVAL_MS)).chat.completions.create({
       model: ANALYSIS_MODEL,
       messages: [{ role: "system", content: prompt }],
       response_format: { type: "json_object" },
       temperature: 0.2,
-      max_tokens: 180,
+      max_tokens: 500,
+      reasoning_effort: "low",
     })
   );
 
-  const parsed = JSON.parse(completion.choices[0].message.content || "{}");
+  const rawContent = completion.choices[0]?.message?.content || "";
+  let parsed;
+  try {
+    parsed = JSON.parse(rawContent || "{}");
+  } catch {
+    throw new Error("Caption generation returned an unreadable response. Please try again.");
+  }
   return {
     caption: String(parsed.caption || "").trim(),
     hashtags: Array.isArray(parsed.hashtags)
