@@ -542,27 +542,64 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
     ownerCreditName
   );
 
-  // If a chunk hit an exhausted token quota or a decommissioned model AND
-  // that left us with fewer clips than the job should have, surface the
-  // real reason as a failed job instead of silently completing with a
-  // handful of clips (or the single generic fallback clip below) and no
-  // explanation.
-  if ((quotaExhaustedError || modelDecommissionedError) && rankedClips.length < MIN_CLIPS_PER_JOB) {
+  // If the LLM analysis found literally nothing usable AND that's because
+  // of an exhausted token quota or a decommissioned model, surface the real
+  // reason as a failed job - there's no transcript-derived signal left to
+  // fall back on, so a silent, quality-less result would be worse than
+  // failing loudly.
+  if (!rankedClips.length && (quotaExhaustedError || modelDecommissionedError)) {
     throw modelDecommissionedError || quotaExhaustedError;
   }
 
-  if (rankedClips.length) return rankedClips;
+  // Every job should deliver at least `requestedClipCount` clips whenever
+  // the video is physically long enough to support that many - regardless
+  // of whether the LLM found that many strong moments itself (too few
+  // candidates, partial chunk failures, quota hit partway through, etc).
+  // Pad out with evenly-spaced, non-overlapping timeline segments so the
+  // user always gets a full set instead of a partial or single-clip result.
+  return fillClipsToTarget(rankedClips, videoStart, videoEnd, requestedClipCount, ownerCreditName);
+}
 
-  return [
-    {
-      start: videoStart,
-      end: Math.min(videoStart + MAX_CLIP_SECONDS, videoEnd),
-      caption: "",
-      hashtags: [],
-      rankScore: 0.1,
-      creditLine: `Original video by ${ownerCreditName}`,
-    },
-  ];
+// Builds a plain (uncaptioned) clip covering [start, end) for use as filler
+// when the LLM-derived candidates don't reach the target count on their own.
+function buildFillerClip(start, end, ownerCreditName) {
+  return {
+    start,
+    end,
+    caption: "",
+    hashtags: [],
+    rankScore: 0.05,
+    creditLine: `Original video by ${ownerCreditName}`,
+  };
+}
+
+// Tops `clips` up to `targetCount` by slicing the full [videoStart, videoEnd)
+// timeline into `targetCount` even windows and using whichever windows don't
+// overlap an already-selected clip as filler. Never exceeds what the video's
+// duration can physically support, and never overlaps a real clip.
+function fillClipsToTarget(clips, videoStart, videoEnd, targetCount, ownerCreditName) {
+  if (clips.length >= targetCount) return clips;
+
+  const result = [...clips];
+  const usedRanges = result.map((clip) => ({ start: clip.start, end: clip.end }));
+  const totalDuration = videoEnd - videoStart;
+  const slotLength = totalDuration / targetCount;
+
+  for (let i = 0; i < targetCount && result.length < targetCount; i += 1) {
+    const slotStart = videoStart + i * slotLength;
+    const clipLength = Math.min(MAX_CLIP_SECONDS, Math.max(MIN_CLIP_SECONDS, slotLength));
+    const clipStart = Math.max(videoStart, Math.min(slotStart, videoEnd - clipLength));
+    const clipEnd = Math.min(clipStart + clipLength, videoEnd);
+    if (clipEnd - clipStart < MIN_CLIP_SECONDS - 2) continue;
+
+    const candidateRange = { start: clipStart, end: clipEnd };
+    if (usedRanges.some((range) => isClipOverlap(range, candidateRange))) continue;
+
+    result.push(buildFillerClip(clipStart, clipEnd, ownerCreditName));
+    usedRanges.push(candidateRange);
+  }
+
+  return result;
 }
 
 function selectDistributedClips(clips, requestedClipCount) {
