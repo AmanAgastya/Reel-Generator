@@ -6,11 +6,11 @@ const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "openai/gpt-oss-120b";
 
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 30);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 120);
-// Every job should produce at least 8 clips and, for longer source videos,
+// Every job should produce at least 5 clips and, for longer source videos,
 // as many as 30 — the analyzer scales the actual requested count between
 // these two bounds based on the source video's duration (see
 // analyzeBestMoments below), it never overshoots MAX_CLIPS_PER_JOB.
-const MIN_CLIPS_PER_JOB = Number(process.env.MIN_CLIPS_PER_JOB || 8);
+const MIN_CLIPS_PER_JOB = Number(process.env.MIN_CLIPS_PER_JOB || 5);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 30);
 // Smaller chunks use fewer tokens per Groq request (roughly half of the
 // old 18000-char default) and produce more, finer-grained chunks for a
