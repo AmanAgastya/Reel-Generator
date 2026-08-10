@@ -69,7 +69,7 @@ services:
       - key: MAX_CLIP_SECONDS
         value: "120"
       - key: MIN_CLIPS_PER_JOB
-        value: "8"
+        value: "5"
       - key: MAX_CLIPS_PER_JOB
         value: "15" # lower than the Starter default of 30 — each clip is a full ffmpeg encode on a tenth of a core
       - key: MAX_CONCURRENT_JOBS
