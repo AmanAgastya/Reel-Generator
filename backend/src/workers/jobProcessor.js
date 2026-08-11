@@ -158,16 +158,28 @@ export async function processJob(jobId) {
     // a time (was: sequential await in a for loop — the dominant cost for
     // jobs with many clips, since each render is an independent ffmpeg run).
     await mapWithConcurrency(moments, CLIP_RENDER_CONCURRENCY, async (moment) => {
-      const clipDoc = await Clip.create({
-        job: job._id,
-        startSeconds: moment.start,
-        endSeconds: moment.end,
-        caption: String(moment.caption || ""),
-        hashtags: moment.hashtags || [],
-        creditLine: moment.creditLine,
-        rankScore: moment.rankScore,
-        status: "pending",
-      });
+      let clipDoc;
+      try {
+        clipDoc = await Clip.create({
+          job: job._id,
+          startSeconds: moment.start,
+          endSeconds: moment.end,
+          // Fall back to a generic caption rather than "" - the schema
+          // requires a non-empty caption, so an empty/missing one here
+          // would throw a validation error and drop this clip entirely.
+          caption: String(moment.caption || "").trim() || "Highlight from the video",
+          hashtags: moment.hashtags || [],
+          creditLine: moment.creditLine,
+          rankScore: moment.rankScore,
+          status: "pending",
+        });
+      } catch (err) {
+        renderErrors.push(err.message);
+        console.error(`[job] clip creation failed: ${err.message}`);
+        done += 1;
+        await queueProgressSave();
+        return;
+      }
 
       try {
         const filePath = await renderClip(sourceFilePath, moment, sourceDimensions);
