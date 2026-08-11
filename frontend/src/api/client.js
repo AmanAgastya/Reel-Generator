@@ -292,6 +292,22 @@ export function clipDownloadUrl(jobId, clipId) {
   return `${API_BASE}/jobs/${jobId}/clips/${clipId}/download`;
 }
 
+// Triggers a browser download for a single clip without navigating away or
+// opening a new tab. The saved filename comes from the server's
+// Content-Disposition header on the /download route (friendlyClipFileName
+// in backend/src/routes/jobs.js, built from the clip's caption) — the empty
+// `download` attribute here just tells the browser to save rather than
+// play the file inline, it doesn't override that name.
+export function triggerClipDownload(jobId, clipId) {
+  const link = document.createElement("a");
+  link.href = clipDownloadUrl(jobId, clipId);
+  link.download = "";
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 export function clipStreamUrl(jobId, clipId) {
   return `${API_BASE}/jobs/${jobId}/clips/${clipId}/stream`;
 }
