@@ -359,6 +359,24 @@ body::after {
 }
 .back:hover { color: var(--grease); }
 
+.auto-download-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--ink-soft, #b7b7c0);
+  margin: 4px 0 0;
+  cursor: pointer;
+}
+
+.auto-download-toggle input { accent-color: var(--grease); cursor: pointer; }
+
+.auto-download-hint {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+
 /* --- Filmstrip progress tracker: the signature motif doing real work.
    Each stage is a sprocket-perforated "frame"; the current stage flickers
    like a tally light, finished stages are exposed (grease-yellow). --- */
