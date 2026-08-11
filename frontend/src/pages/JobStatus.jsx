@@ -1,7 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { getJob } from "../api/client.js";
+import { getJob, triggerClipDownload } from "../api/client.js";
 import ClipCard from "../components/ClipCard.jsx";
+
+// Space auto-triggered downloads apart instead of firing a burst all at
+// once - most browsers throttle or prompt for permission ("This site is
+// trying to download multiple files") when several downloads start in the
+// same tick, which would either block them silently or interrupt the user
+// for every job. A small stagger avoids that without meaningfully slowing
+// things down.
+const AUTO_DOWNLOAD_STAGGER_MS = 700;
 
 const STAGES = ["queued", "downloading", "transcribing", "analyzing", "clipping", "completed"];
 
@@ -20,6 +28,22 @@ export default function JobStatus() {
   const [job, setJob] = useState(null);
   const [clips, setClips] = useState([]);
   const [error, setError] = useState("");
+  // Persisted so a toggle flip doesn't restart the polling effect, and so
+  // the choice survives across jobs on this device.
+  const [autoDownload, setAutoDownload] = useState(
+    () => localStorage.getItem("autoDownloadClips") !== "off"
+  );
+  const autoDownloadRef = useRef(autoDownload);
+  useEffect(() => {
+    autoDownloadRef.current = autoDownload;
+    localStorage.setItem("autoDownloadClips", autoDownload ? "on" : "off");
+  }, [autoDownload]);
+
+  // Tracks which clips have already been auto-downloaded in this session so
+  // a clip never re-downloads itself on a later poll (the job status is
+  // polled every 3s for as long as the page stays open).
+  const downloadedClipIdsRef = useRef(new Set());
+  const downloadQueueLengthRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -48,6 +72,20 @@ export default function JobStatus() {
         setClips(data.clips);
         setError("");
         failureCount = 0;
+
+        if (autoDownloadRef.current) {
+          const newlyRendered = data.clips.filter(
+            (clip) => clip.status === "rendered" && !downloadedClipIdsRef.current.has(clip._id)
+          );
+          newlyRendered.forEach((clip) => {
+            downloadedClipIdsRef.current.add(clip._id);
+            const position = downloadQueueLengthRef.current++;
+            setTimeout(() => {
+              if (active) triggerClipDownload(data.job._id, clip._id);
+            }, position * AUTO_DOWNLOAD_STAGGER_MS);
+          });
+        }
+
         if (["completed", "failed"].includes(data.job.status)) {
           clearInterval(interval);
         }
@@ -109,6 +147,21 @@ export default function JobStatus() {
             : "Finding the best moments…"}
         </h1>
       </header>
+
+      <label className="auto-download-toggle">
+        <input
+          type="checkbox"
+          checked={autoDownload}
+          onChange={(e) => setAutoDownload(e.target.checked)}
+        />
+        Auto-download each clip as it finishes (saved as its caption, e.g. "clip-caption.mp4")
+      </label>
+      {autoDownload && (
+        <p className="sub auto-download-hint">
+          Your browser may ask you to allow multiple downloads from this site the first time — allow it so every
+          clip saves automatically.
+        </p>
+      )}
 
       {error && <p className="error">{error}</p>}
 
