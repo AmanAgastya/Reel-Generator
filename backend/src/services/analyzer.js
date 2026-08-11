@@ -560,13 +560,17 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
   return fillClipsToTarget(rankedClips, videoStart, videoEnd, requestedClipCount, ownerCreditName);
 }
 
-// Builds a plain (uncaptioned) clip covering [start, end) for use as filler
-// when the LLM-derived candidates don't reach the target count on their own.
+// Builds a plain, generically-captioned clip covering [start, end) for use
+// as filler when the LLM-derived candidates don't reach the target count on
+// their own. The Clip schema requires a non-empty caption (Mongoose treats
+// "" as failing `required` for String paths), so this can't be left blank —
+// an empty string here throws "Path `caption` is required." on save and
+// aborts that clip's processing outright.
 function buildFillerClip(start, end, ownerCreditName) {
   return {
     start,
     end,
-    caption: "",
+    caption: "Highlight from the video",
     hashtags: [],
     rankScore: 0.05,
     creditLine: `Original video by ${ownerCreditName}`,
