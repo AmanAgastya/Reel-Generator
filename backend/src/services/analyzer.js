@@ -62,7 +62,7 @@ const AUDIO_ENERGY_CONCURRENCY = Math.max(1, Number(process.env.AUDIO_ENERGY_CON
 // candidates just because MAX_CANDIDATE_CLIPS_PER_CHUNK asked for more than
 // the chunk actually had. Set to 0 to disable and accept every candidate the
 // LLM returns, however weak.
-const MIN_CLIP_RANK_SCORE = Math.max(0, Math.min(1, Number(process.env.MIN_CLIP_RANK_SCORE ?? 0.4)));
+const MIN_CLIP_RANK_SCORE = Math.max(0, Math.min(1, Number(process.env.MIN_CLIP_RANK_SCORE ?? 0.3)));
 // Whether to top a job up to `requestedClipCount` with synthetic,
 // evenly-spaced, sequential timeline slices (see fillClipsToTarget) when the
 // real analysis finds fewer good moments than that target. Defaults to OFF:
@@ -591,9 +591,28 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
   // happily fill its per-chunk quota with a chunk's weakest candidates
   // whenever MAX_CANDIDATE_CLIPS_PER_CHUNK asks for more than that chunk
   // actually had strong moments for.
-  const qualifiedCandidateClips = candidateClips.filter(
+  let qualifiedCandidateClips = candidateClips.filter(
     (clip) => Number.isFinite(clip.rankScore) && clip.rankScore >= MIN_CLIP_RANK_SCORE
   );
+
+  // If the threshold filtered out *every* candidate, that's the threshold
+  // being miscalibrated for this particular video (e.g. the model's own
+  // rankScores all landed a little under the bar, or a quiet source video
+  // dragged every audio-energy score down) - it does not mean the analysis
+  // found nothing. candidateClips are still real, LLM-identified moments
+  // with real transcript backing, just not ones that cleared an arbitrary
+  // cutoff. Failing the whole job here (or, worse, returning zero clips)
+  // would throw away genuine analysis output over a scoring technicality.
+  // Fall back to the best of what was actually found instead, so a real
+  // best-effort set of moments is always delivered when any exist at all.
+  if (!qualifiedCandidateClips.length && candidateClips.length) {
+    console.warn(
+      `[analyzer] MIN_CLIP_RANK_SCORE=${MIN_CLIP_RANK_SCORE} filtered out all ${candidateClips.length} ` +
+        "candidate clip(s) for this video - falling back to the highest-scoring candidates found instead " +
+        "of failing the job."
+    );
+    qualifiedCandidateClips = candidateClips;
+  }
 
   const rankedClips = normalizeClips(
     selectDistributedClips(qualifiedCandidateClips, requestedClipCount),
