@@ -6,10 +6,12 @@ const ANALYSIS_MODEL = process.env.GROQ_ANALYSIS_MODEL || "openai/gpt-oss-120b";
 
 const MIN_CLIP_SECONDS = Number(process.env.MIN_CLIP_SECONDS || 30);
 const MAX_CLIP_SECONDS = Number(process.env.MAX_CLIP_SECONDS || 120);
-// Every job should produce at least 5 clips and, for longer source videos,
-// as many as 30 — the analyzer scales the actual requested count between
-// these two bounds based on the source video's duration (see
-// analyzeBestMoments below), it never overshoots MAX_CLIPS_PER_JOB.
+// The analyzer scales its *requested* clip count for the LLM between these
+// two bounds based on the source video's duration (see analyzeBestMoments
+// below) and never overshoots MAX_CLIPS_PER_JOB - but this is a target for
+// analysis, not a guarantee. By default (see ENABLE_FILLER_CLIPS below) a
+// job's actual output can land below MIN_CLIPS_PER_JOB if the video simply
+// doesn't have that many strong, above-threshold moments in it.
 const MIN_CLIPS_PER_JOB = Number(process.env.MIN_CLIPS_PER_JOB || 5);
 const MAX_CLIPS_PER_JOB = Number(process.env.MAX_CLIPS_PER_JOB || 30);
 // Smaller chunks use fewer tokens per Groq request (roughly half of the
@@ -52,6 +54,25 @@ const AUDIO_ENERGY_WEIGHT = Math.max(0, Math.min(1, Number(process.env.AUDIO_ENE
 // getEffectiveCpuCount() (not raw os.cpus()) so this doesn't oversubscribe
 // a CPU-throttled host either - see cpuLimit.js.
 const AUDIO_ENERGY_CONCURRENCY = Math.max(1, Number(process.env.AUDIO_ENERGY_CONCURRENCY || Math.min(6, getEffectiveCpuCount())));
+// A candidate's final rankScore (LLM score blended with audio energy, 0-1)
+// has to clear this bar to be considered a real "best moment" at all. Cuts
+// off the low-confidence tail of the LLM's own candidate list before
+// selectDistributedClips ever runs, so a chunk that only found a couple of
+// genuinely strong moments doesn't also contribute its weakest, barely-there
+// candidates just because MAX_CANDIDATE_CLIPS_PER_CHUNK asked for more than
+// the chunk actually had. Set to 0 to disable and accept every candidate the
+// LLM returns, however weak.
+const MIN_CLIP_RANK_SCORE = Math.max(0, Math.min(1, Number(process.env.MIN_CLIP_RANK_SCORE ?? 0.4)));
+// Whether to top a job up to `requestedClipCount` with synthetic,
+// evenly-spaced, sequential timeline slices (see fillClipsToTarget) when the
+// real analysis finds fewer good moments than that target. Defaults to OFF:
+// a job now returns however many real, above-threshold moments the analysis
+// actually found, even if that's fewer than requestedClipCount, instead of
+// padding out the rest with generic non-analyzed clips that aren't actually
+// "best moments" - which is what was producing a mix of a few good clips and
+// several dumb sequential ones with no way to tell them apart. Set to
+// "true" to restore the old always-hit-the-target behavior.
+const ENABLE_FILLER_CLIPS = String(process.env.ENABLE_FILLER_CLIPS || "false").toLowerCase() === "true";
 
 function buildTranscriptLines(segments) {
   return segments.map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`);
@@ -470,6 +491,22 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
     throw new Error(`Video is too short to create a ${MIN_CLIP_SECONDS}-second clip.`);
   }
 
+  // Fail fast, before doing any transcript-chunking/analysis work, if there's
+  // no Groq key configured at all. Previously this only surfaced deep inside
+  // analyzeTranscriptChunk (as a per-chunk error that gets caught below and
+  // silently ignored), which meant a missing key never actually failed the
+  // job - it just meant every chunk returned zero candidate clips and the
+  // job silently fell through to fillClipsToTarget, producing a full set of
+  // evenly-spaced, sequential, genrically-captioned clips with no LLM
+  // selection behind them at all. Checking here turns that into a clear,
+  // actionable error instead of a silently low-quality result.
+  if (!getGroqKeyCount()) {
+    throw new Error(
+      "No Groq API key is configured, so the video could not be analyzed for its best moments. " +
+        "Set GROQ_API_KEY (or GROQ_API_KEYS) in your .env and try again."
+    );
+  }
+
   const possibleClipCount = Math.max(1, Math.floor(videoDuration / MIN_CLIP_SECONDS));
   const requestedClipCount = Math.min(
     MAX_CLIPS_PER_JOB,
@@ -487,6 +524,16 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
   // opposed to a transient error) - see the check after chunkResults below.
   let quotaExhaustedError = null;
   let modelDecommissionedError = null;
+  // Tracks the most recent *any-cause* chunk failure (bad/invalid API key,
+  // network error, malformed JSON from the model, etc). Previously only
+  // quota/decommission errors were remembered here, so any other failure
+  // mode was silently swallowed: every chunk would return zero candidates,
+  // rankedClips would end up empty, and the code would fall straight
+  // through to fillClipsToTarget - producing a full set of dumb,
+  // evenly-spaced, sequential filler clips with no indication that the
+  // analysis step never actually ran. Remembering the real cause here lets
+  // the check below fail the job loudly instead.
+  let lastChunkError = null;
 
   // Chunks are analyzed concurrently (was: sequential await in a for loop,
   // which meant a 4-chunk transcript took 4x as long as it needed to).
@@ -509,6 +556,7 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
         chunkResults.push(chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK));
       } catch (error) {
         console.error("[analyzer] chunk analysis failed:", error);
+        lastChunkError = error;
         if (error?.isQuotaExhausted) quotaExhaustedError = error;
         if (error?.isModelDecommissioned) modelDecommissionedError = error;
         chunkResults.push([]);
@@ -524,6 +572,7 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
           return chunkClips.slice(0, MAX_CANDIDATE_CLIPS_PER_CHUNK);
         } catch (error) {
           console.error("[analyzer] chunk analysis failed:", error);
+          lastChunkError = error;
           if (error?.isQuotaExhausted) quotaExhaustedError = error;
           if (error?.isModelDecommissioned) modelDecommissionedError = error;
           return [];
@@ -537,27 +586,51 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
   // sounds before picking the final set - see applyAudioEnergyScores.
   await applyAudioEnergyScores(candidateClips, sourceFilePath);
 
+  // Drop the low-confidence tail before selection even sees it - see
+  // MIN_CLIP_RANK_SCORE above. Without this, selectDistributedClips will
+  // happily fill its per-chunk quota with a chunk's weakest candidates
+  // whenever MAX_CANDIDATE_CLIPS_PER_CHUNK asks for more than that chunk
+  // actually had strong moments for.
+  const qualifiedCandidateClips = candidateClips.filter(
+    (clip) => Number.isFinite(clip.rankScore) && clip.rankScore >= MIN_CLIP_RANK_SCORE
+  );
+
   const rankedClips = normalizeClips(
-    selectDistributedClips(candidateClips, requestedClipCount),
+    selectDistributedClips(qualifiedCandidateClips, requestedClipCount),
     ownerCreditName
   );
 
-  // If the LLM analysis found literally nothing usable AND that's because
-  // of an exhausted token quota or a decommissioned model, surface the real
-  // reason as a failed job - there's no transcript-derived signal left to
-  // fall back on, so a silent, quality-less result would be worse than
-  // failing loudly.
-  if (!rankedClips.length && (quotaExhaustedError || modelDecommissionedError)) {
-    throw modelDecommissionedError || quotaExhaustedError;
+  // If the LLM analysis found literally nothing usable, surface the real
+  // reason as a failed job instead of silently falling through to
+  // fillClipsToTarget below. Previously this only checked for quota
+  // exhaustion or a decommissioned model - any other failure (bad/invalid
+  // API key, network error, a chunk's JSON failing to parse, etc) fell
+  // through unnoticed, and every clip in the job ended up being
+  // fillClipsToTarget's dumb, evenly-spaced, sequential, generically
+  // captioned filler with zero real selection behind it - which is exactly
+  // the "clips are just cut in sequence with no gap or filtering" symptom
+  // this fixes. There's no transcript-derived signal left to fall back on
+  // when zero candidates came back, so failing loudly here is strictly
+  // better than a silent, quality-less "success".
+  if (!rankedClips.length && (quotaExhaustedError || modelDecommissionedError || lastChunkError)) {
+    throw modelDecommissionedError || quotaExhaustedError || lastChunkError;
   }
 
-  // Every job should deliver at least `requestedClipCount` clips whenever
-  // the video is physically long enough to support that many - regardless
-  // of whether the LLM found that many strong moments itself (too few
-  // candidates, partial chunk failures, quota hit partway through, etc).
-  // Pad out with evenly-spaced, non-overlapping timeline segments so the
-  // user always gets a full set instead of a partial or single-clip result.
-  return fillClipsToTarget(rankedClips, videoStart, videoEnd, requestedClipCount, ownerCreditName);
+  // Every job used to be padded out to `requestedClipCount` with synthetic,
+  // evenly-spaced, sequential timeline slices whenever the real analysis
+  // found fewer strong moments than that target - regardless of whether
+  // those slices were actually good moments. That's disabled by default now
+  // (see ENABLE_FILLER_CLIPS): a job returns however many real,
+  // above-threshold moments were found, sorted by rankScore, even if that's
+  // fewer than requestedClipCount. Set ENABLE_FILLER_CLIPS=true to restore
+  // the old always-hit-the-target behavior.
+  const finalClips = rankedClips.slice().sort((a, b) => b.rankScore - a.rankScore);
+
+  if (!ENABLE_FILLER_CLIPS) {
+    return finalClips;
+  }
+
+  return fillClipsToTarget(finalClips, videoStart, videoEnd, requestedClipCount, ownerCreditName);
 }
 
 // Builds a plain, generically-captioned clip covering [start, end) for use
