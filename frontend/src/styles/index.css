@@ -724,3 +724,33 @@ body::after {
   .clip-card { flex-direction: column; }
   .hero-stickers { gap: 10px; }
 }
+
+.reanalyze-section {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  text-align: center;
+}
+
+.reanalyze-button {
+  padding: 12px 22px;
+  border-radius: 8px;
+  border: 1px solid var(--grease-dim);
+  background: transparent;
+  color: var(--grease);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.15s ease, filter 0.15s ease;
+}
+
+.reanalyze-button:hover:not(:disabled) {
+  background: rgba(255, 210, 63, 0.08);
+  filter: brightness(1.05);
+}
+
+.reanalyze-button:active:not(:disabled) { transform: scale(0.99); }
+
+.reanalyze-button:disabled { border-color: var(--line); color: var(--muted); cursor: not-allowed; }
+
+.reanalyze-section .sub { margin: 10px 0 0; }
