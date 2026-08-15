@@ -1,5 +1,17 @@
 import fs from "fs/promises";
 import path from "path";
+import Job from "../models/Job.js";
+
+// In-process registry of pending "delete this group's source file" timers,
+// keyed by sourceGroupId (a job's own _id if it's the original of its
+// group). Deliberately in-memory, matching the rest of the job
+// pipeline (jobProcessor.js's queue is in-process too, not a real job
+// queue) - a server restart loses pending timers the same way it loses
+// in-flight jobs, and the STORAGE_MAX_AGE_MINUTES sweep in server.js is the
+// backstop that catches whatever this misses. Restart safety is why the
+// default retention window (SOURCE_RETENTION_MS in jobProcessor.js) should
+// stay comfortably shorter than STORAGE_MAX_AGE_MINUTES.
+const pendingGroupCleanups = new Map();
 
 /**
  * Deletes a file if it exists. Never throws — logs and returns false on
@@ -17,6 +29,55 @@ export async function safeDeleteFile(filePath) {
     }
     return false;
   }
+}
+
+/**
+ * Cancels a previously scheduled group cleanup (see scheduleGroupCleanup)
+ * without running it. Used when a reanalyze request claims the file before
+ * its retention window lapses.
+ */
+export function cancelGroupCleanup(groupId) {
+  const key = String(groupId);
+  const timer = pendingGroupCleanups.get(key);
+  if (timer) {
+    clearTimeout(timer);
+    pendingGroupCleanups.delete(key);
+  }
+}
+
+/**
+ * Schedules the shared source file for a job group (the original job plus
+ * any jobs reanalyzed from it - see sourceGroupId on the Job model) to be
+ * deleted after delayMs, instead of deleting it the moment a job finishes.
+ * This is what makes "reanalyze" possible: the file survives long enough
+ * for a follow-up job to reuse it. Replaces any timer already pending for
+ * this group rather than stacking a second one.
+ *
+ * When the timer fires, every Job document in the group (the original plus
+ * any reanalyses) is marked as having its source file removed, since they
+ * all pointed at the same physical path.
+ */
+export function scheduleGroupCleanup(groupId, filePath, delayMs) {
+  const key = String(groupId);
+  cancelGroupCleanup(key);
+  const timer = setTimeout(async () => {
+    pendingGroupCleanups.delete(key);
+    await safeDeleteFile(filePath);
+    try {
+      await Job.updateMany(
+        { $or: [{ _id: key }, { sourceGroupId: key }] },
+        {
+          $set: { workingFilePath: null, sourceFileRemoved: true, sourceFileRemovedAt: new Date() },
+        }
+      );
+    } catch (err) {
+      console.error(`[cleanup] failed to mark job group ${key} as cleaned up:`, err);
+    }
+  }, delayMs);
+  // Don't let this timer keep the Node process alive on its own during
+  // graceful shutdown.
+  timer.unref?.();
+  pendingGroupCleanups.set(key, timer);
 }
 
 /**
