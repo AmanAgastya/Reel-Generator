@@ -1,12 +1,25 @@
+import fs from "fs/promises";
 import Job from "../models/Job.js";
 import Clip from "../models/Clip.js";
 import { downloadYouTubeVideo } from "../services/downloader.js";
 import { transcribeVideo } from "../services/transcriber.js";
 import { analyzeBestMoments } from "../services/analyzer.js";
 import { renderClip, probeVideoDimensions } from "../services/clipper.js";
-import { safeDeleteFile } from "../utils/cleanup.js";
+import { safeDeleteFile, scheduleGroupCleanup } from "../utils/cleanup.js";
 import { mapWithConcurrency } from "../utils/concurrency.js";
 import { getEffectiveCpuCount } from "../utils/cpuLimit.js";
+
+// How long a completed job's source video is kept on disk before it's
+// deleted, instead of deleting it the instant the job finishes. This is
+// what "reanalyze" (routes/jobs.js's /:id/reanalyze) reuses: as long as a
+// follow-up request comes in within this window, it can skip re-downloading
+// or re-uploading the video entirely and jump straight to analysis. Keep
+// this comfortably below STORAGE_MAX_AGE_MINUTES (server.js) - that sweep
+// doesn't know about retained-for-reanalysis files and will delete them by
+// age regardless, so if this window were longer the sweep would just win
+// the race and reanalyze would fall back to the "source no longer
+// available" path anyway.
+const SOURCE_RETENTION_MS = Math.max(0, Number(process.env.REANALYSIS_RETENTION_MINUTES ?? 20)) * 60 * 1000;
 
 const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.MAX_CONCURRENT_JOBS || 1));
 // Each clip render is an independent ffmpeg encode of a short (15-60s)
@@ -72,50 +85,84 @@ export async function processJob(jobId) {
     return;
   }
 
+  // Reanalysis fast path: this job was spawned from routes/jobs.js's
+  // /:id/reanalyze against a source video that was still retained on disk
+  // (see SOURCE_RETENTION_MS above), so the route handler already copied
+  // the transcript onto this job and pointed workingFilePath at the
+  // existing file - skip straight to analysis instead of re-downloading or
+  // re-transcribing. Guarded by an actual file-existence check since the
+  // backstop age-based sweep in server.js doesn't know about retained files
+  // and can win the race and delete it first; if that happened, fall
+  // through to the normal path below (which re-downloads for a YouTube
+  // source, or fails clearly for an upload whose only copy is gone).
+  let reuseExistingSource = false;
+  if (job.isReanalysis && job.workingFilePath && Array.isArray(job.transcript) && job.transcript.length) {
+    try {
+      await fs.access(job.workingFilePath);
+      reuseExistingSource = true;
+    } catch {
+      reuseExistingSource = false;
+    }
+  }
+
   try {
-    // 1. Get local video file
-    job.status = "downloading";
-    job.progress = 10;
-    if (!job.startedAt) job.startedAt = new Date();
-    await job.save();
+    let sourceFilePath;
+    let transcript;
 
-    const sourceFilePath =
-      job.sourceType === "youtube_url"
-        ? await downloadYouTubeVideo(job.sourceUrl)
-        : job.sourceFilePath;
+    if (reuseExistingSource) {
+      sourceFilePath = job.workingFilePath;
+      transcript = job.transcript;
+      job.status = "analyzing";
+      job.progress = 60;
+      if (!job.startedAt) job.startedAt = new Date();
+      await job.save();
+    } else {
+      // 1. Get local video file
+      job.status = "downloading";
+      job.progress = 10;
+      if (!job.startedAt) job.startedAt = new Date();
+      await job.save();
 
-    job.workingFilePath = sourceFilePath;
-    await job.save();
+      sourceFilePath =
+        job.sourceType === "youtube_url"
+          ? await downloadYouTubeVideo(job.sourceUrl)
+          : job.sourceFilePath;
 
-    // 2. Transcribe
-    job.status = "transcribing";
-    job.progress = 15;
-    await job.save();
-    // transcribeVideo's progress callback fires once per transcription
-    // chunk, and those chunks run TRANSCRIPTION_CONCURRENCY-at-a-time (see
-    // transcriber.js) - so several chunks can finish within the same tick
-    // and call this callback concurrently. Calling `job.save()` directly
-    // here let multiple saves race on the same in-memory document, which
-    // is exactly what Mongoose's "Can't save() the same doc multiple times
-    // in parallel" (ParallelSaveError) is reporting. Chained through the
-    // same saveChain pattern used for the clip-rendering loop below so
-    // concurrent progress updates queue up and save one at a time instead.
-    let transcribeSaveChain = Promise.resolve();
-    const transcript = await transcribeVideo(sourceFilePath, async (percent) => {
+      job.workingFilePath = sourceFilePath;
+      await job.save();
+
+      // 2. Transcribe
       job.status = "transcribing";
-      job.progress = 15 + Math.round(percent * 25);
-      transcribeSaveChain = transcribeSaveChain
-        .then(() => job.save())
-        .catch((e) => console.error("[job] transcription progress save failed:", e));
-      return transcribeSaveChain;
-    });
-    await transcribeSaveChain;
-    job.transcript = transcript;
+      job.progress = 15;
+      await job.save();
+      // transcribeVideo's progress callback fires once per transcription
+      // chunk, and those chunks run TRANSCRIPTION_CONCURRENCY-at-a-time (see
+      // transcriber.js) - so several chunks can finish within the same tick
+      // and call this callback concurrently. Calling `job.save()` directly
+      // here let multiple saves race on the same in-memory document, which
+      // is exactly what Mongoose's "Can't save() the same doc multiple times
+      // in parallel" (ParallelSaveError) is reporting. Chained through the
+      // same saveChain pattern used for the clip-rendering loop below so
+      // concurrent progress updates queue up and save one at a time instead.
+      let transcribeSaveChain = Promise.resolve();
+      transcript = await transcribeVideo(sourceFilePath, async (percent) => {
+        job.status = "transcribing";
+        job.progress = 15 + Math.round(percent * 25);
+        transcribeSaveChain = transcribeSaveChain
+          .then(() => job.save())
+          .catch((e) => console.error("[job] transcription progress save failed:", e));
+        return transcribeSaveChain;
+      });
+      await transcribeSaveChain;
+      job.transcript = transcript;
+      job.progress = 40;
+      await job.save();
+    }
+
     job.videoDurationSeconds = Math.max(
       0,
       (transcript[transcript.length - 1]?.end || 0) - (transcript[0]?.start || 0)
     );
-    job.progress = 40;
     await job.save();
 
     // 3. Analyze for best moments
@@ -125,6 +172,7 @@ export async function processJob(jobId) {
     const moments = await analyzeBestMoments(transcript, {
       ownerCreditName: job.ownerCreditName,
       sourceFilePath,
+      excludeRanges: (job.excludeRanges || []).map((r) => ({ start: r.start, end: r.end })),
     });
     if (!moments.length) {
       throw new Error("No usable moments were found in the video transcript.");
@@ -205,14 +253,27 @@ export async function processJob(jobId) {
       throw new Error(`Could not render any clips. ${renderErrors[0] || "Check the server logs for ffmpeg errors."}`);
     }
 
-    // Clips are cut — the full source video is no longer needed. Remove it
-    // from disk and clear its reference in the DB so it isn't kept around
-    // (or re-servable) after the job finishes.
-    await safeDeleteFile(sourceFilePath);
-    job.workingFilePath = null;
-    job.sourceFilePath = null;
-    job.sourceFileRemoved = true;
-    job.sourceFileRemovedAt = new Date();
+    // Clips are cut — the full source video isn't needed immediately, but
+    // instead of deleting it right away (the old behavior), it's kept for
+    // SOURCE_RETENTION_MS so a "reanalyze" request can reuse it - see
+    // scheduleGroupCleanup. groupId is the root job of this source video's
+    // group: this job's own sourceGroupId if it's a reanalysis, or its own
+    // _id if it's the original. Every job sharing that id shares this one
+    // physical file, so the group (not just this job) is what the eventual
+    // cleanup has to update.
+    const groupId = job.sourceGroupId || job._id;
+    job.sourceRetentionExpiresAt = SOURCE_RETENTION_MS > 0 ? new Date(Date.now() + SOURCE_RETENTION_MS) : new Date();
+    if (SOURCE_RETENTION_MS > 0) {
+      scheduleGroupCleanup(groupId, sourceFilePath, SOURCE_RETENTION_MS);
+    } else {
+      // Retention disabled (REANALYSIS_RETENTION_MINUTES=0) - fall back to
+      // the original immediate-delete behavior.
+      await safeDeleteFile(sourceFilePath);
+      job.workingFilePath = null;
+      job.sourceFilePath = null;
+      job.sourceFileRemoved = true;
+      job.sourceFileRemovedAt = new Date();
+    }
 
     job.status = "completed";
     job.progress = 100;
@@ -225,8 +286,14 @@ export async function processJob(jobId) {
     // and no separate cleanup job, so a run of failed jobs would quietly
     // fill the container's disk until every subsequent job started
     // failing too.
+    //
+    // Exception: a reused, retained source file (reuseExistingSource) is
+    // shared with other jobs in its group - possibly ones that already
+    // completed successfully and still have a pending retention timer for
+    // it. This job failing doesn't mean that file is safe to delete out
+    // from under them, so leave it and its existing timer alone.
     const leftoverPath = job.workingFilePath || job.sourceFilePath;
-    if (leftoverPath) {
+    if (leftoverPath && !reuseExistingSource) {
       await safeDeleteFile(leftoverPath);
       job.workingFilePath = null;
       job.sourceFilePath = null;
