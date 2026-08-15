@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useParams, Link } from "react-router-dom";
-import { getJob, triggerClipDownload } from "../api/client.js";
+import { useParams, useNavigate, Link } from "react-router-dom";
+import { getJob, triggerClipDownload, reanalyzeJob } from "../api/client.js";
 import ClipCard from "../components/ClipCard.jsx";
 
 // Space auto-triggered downloads apart instead of firing a burst all at
@@ -25,9 +25,12 @@ function formatElapsedTime(startedAt) {
 
 export default function JobStatus() {
   const { jobId } = useParams();
+  const navigate = useNavigate();
   const [job, setJob] = useState(null);
   const [clips, setClips] = useState([]);
   const [error, setError] = useState("");
+  const [reanalyzing, setReanalyzing] = useState(false);
+  const [reanalyzeError, setReanalyzeError] = useState("");
   // Persisted so a toggle flip doesn't restart the polling effect, and so
   // the choice survives across jobs on this device.
   const [autoDownload, setAutoDownload] = useState(
@@ -131,6 +134,20 @@ export default function JobStatus() {
   const renderedCount = clips.filter((clip) => clip.status === "rendered").length;
   const totalClips = job.clipRenderCount || clips.length;
 
+  async function handleReanalyze() {
+    setReanalyzing(true);
+    setReanalyzeError("");
+    try {
+      const newJob = await reanalyzeJob(job._id);
+      navigate(`/jobs/${newJob._id}`);
+    } catch (err) {
+      setReanalyzeError(
+        err.response?.data?.error || err.message || "Couldn't start reanalysis. Try again."
+      );
+      setReanalyzing(false);
+    }
+  }
+
   return (
     <div className="page">
       <Link to="/" className="back">
@@ -213,6 +230,19 @@ export default function JobStatus() {
           {clips.map((clip, i) => (
             <ClipCard key={clip._id} jobId={job._id} clip={clip} index={i} />
           ))}
+        </div>
+      )}
+
+      {job.status === "completed" && (
+        <div className="reanalyze-section">
+          <button className="reanalyze-button" onClick={handleReanalyze} disabled={reanalyzing}>
+            {reanalyzing ? "Starting a new pass…" : "Get more clips from this video"}
+          </button>
+          <p className="sub">
+            Re-analyzes the same video for different moments — same credit line, hashtags, and clip
+            rules as this run, just new picks.
+          </p>
+          {reanalyzeError && <p className="error">{reanalyzeError}</p>}
         </div>
       )}
     </div>
