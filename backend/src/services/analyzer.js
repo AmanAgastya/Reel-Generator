@@ -465,7 +465,10 @@ ${clipTranscript}`;
  * standalone moments and produce a caption + hashtags for each.
  * Returns: [{ start, end, caption, hashtags: [...], rankScore }, ...]
  */
-export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFilePath }) {
+export async function analyzeBestMoments(
+  transcript,
+  { ownerCreditName, sourceFilePath, excludeRanges = [] }
+) {
   const segments = transcript
     .map((segment) => ({
       start: Number(segment.start),
@@ -614,8 +617,33 @@ export async function analyzeBestMoments(transcript, { ownerCreditName, sourceFi
     qualifiedCandidateClips = candidateClips;
   }
 
+  // Reanalysis path: drop any candidate that overlaps a moment an earlier
+  // job in this video's group already turned into a clip, so "reanalyze"
+  // surfaces different moments instead of re-picking the same highlights.
+  // Reuses the same overlap definition selectDistributedClips already uses
+  // to keep clips within one job from overlapping each other. If a video is
+  // short enough (or has few enough strong moments) that excluding prior
+  // ranges would leave nothing to select from, fall back to the unfiltered
+  // list rather than failing the job outright - a job with some repeated
+  // moments is still more useful than one that errors out.
+  let selectableCandidateClips = qualifiedCandidateClips;
+  if (excludeRanges.length) {
+    const filtered = qualifiedCandidateClips.filter(
+      (clip) => !excludeRanges.some((range) => isClipOverlap(range, clip))
+    );
+    if (filtered.length) {
+      selectableCandidateClips = filtered;
+    } else {
+      console.warn(
+        `[analyzer] excludeRanges filtered out all ${qualifiedCandidateClips.length} candidate clip(s) - ` +
+          "this video doesn't have enough remaining strong moments to fully avoid repeats, falling back to " +
+          "the full candidate list."
+      );
+    }
+  }
+
   const rankedClips = normalizeClips(
-    selectDistributedClips(qualifiedCandidateClips, requestedClipCount),
+    selectDistributedClips(selectableCandidateClips, requestedClipCount),
     ownerCreditName
   );
 
