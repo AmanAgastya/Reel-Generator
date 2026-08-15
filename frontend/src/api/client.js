@@ -316,3 +316,8 @@ export async function regenerateClipCaption(jobId, clipId) {
   const { data } = await client.post(`/jobs/${jobId}/clips/${clipId}/regenerate-caption`);
   return data.clip;
 }
+
+export async function reanalyzeJob(jobId) {
+  const { data } = await client.post(`/jobs/${jobId}/reanalyze`);
+  return data;
+}
