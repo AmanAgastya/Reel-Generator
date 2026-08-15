@@ -243,6 +243,91 @@ router.post("/from-upload", upload.single("video"), asyncHandler(async (req, res
   res.status(201).json(job);
 }));
 
+/**
+ * Collects every clip range already produced by any job in a source
+ * video's group (the original job plus any prior reanalyses of it), so a
+ * new reanalysis can steer around them. Only rendered/pending clips count -
+ * a clip that failed to render was never actually delivered to the user, so
+ * its moment is still fair game.
+ */
+async function collectUsedRanges(groupId) {
+  const groupJobs = await Job.find({ $or: [{ _id: groupId }, { sourceGroupId: groupId }] }, { _id: 1 });
+  const jobIds = groupJobs.map((j) => j._id);
+  const clips = await Clip.find(
+    { job: { $in: jobIds }, status: { $in: ["rendered", "pending"] } },
+    { startSeconds: 1, endSeconds: 1 }
+  );
+  return clips.map((clip) => ({ start: clip.startSeconds, end: clip.endSeconds }));
+}
+
+/**
+ * Re-runs analysis + clipping on the same source video to produce a
+ * different set of clips, reusing the original's transcript and every
+ * other setting (owner credit, clip length/count rules, etc.) unchanged.
+ * Skips the download/upload and transcription steps entirely when the
+ * source video is still retained on disk (see SOURCE_RETENTION_MS in
+ * jobProcessor.js) - otherwise falls back to re-downloading it (YouTube
+ * sources only; an uploaded video that's no longer retained has to be
+ * re-uploaded, since there's no copy of it left anywhere to re-fetch).
+ */
+router.post("/:id/reanalyze", asyncHandler(async (req, res) => {
+  let job;
+  try {
+    job = await Job.findById(req.params.id);
+  } catch (err) {
+    if (err.name === "CastError") return res.status(400).json({ error: "Invalid job id" });
+    throw err;
+  }
+  if (!job) return res.status(404).json({ error: "Job not found." });
+  if (job.status !== "completed") {
+    return res.status(409).json({ error: "This job hasn't finished generating clips yet." });
+  }
+
+  const groupId = job.sourceGroupId || job._id;
+  const excludeRanges = await collectUsedRanges(groupId);
+
+  let reuseFilePath = null;
+  if (job.workingFilePath) {
+    try {
+      await fs.access(job.workingFilePath);
+      reuseFilePath = job.workingFilePath;
+    } catch {
+      reuseFilePath = null;
+    }
+  }
+
+  if (!reuseFilePath && job.sourceType === "upload") {
+    return res.status(409).json({
+      error:
+        "The original video is no longer available on the server, so it can't be reanalyzed. " +
+        "Upload the same video again to get a new set of clips.",
+    });
+  }
+
+  const newJob = await Job.create({
+    sourceType: job.sourceType,
+    sourceUrl: job.sourceType === "youtube_url" ? job.sourceUrl : undefined,
+    originalFileName: job.originalFileName,
+    ownershipConfirmed: true,
+    ownerCreditName: job.ownerCreditName,
+    isReanalysis: true,
+    reanalyzedFrom: job._id,
+    sourceGroupId: groupId,
+    excludeRanges,
+    ...(reuseFilePath
+      ? {
+          workingFilePath: reuseFilePath,
+          transcript: job.transcript,
+          videoDurationSeconds: job.videoDurationSeconds,
+        }
+      : {}),
+  });
+
+  enqueueJob(newJob._id);
+
+  res.status(201).json(newJob);
+}));
+
 router.get("/:id", asyncHandler(async (req, res) => {
   try {
     const job = await Job.findById(req.params.id);
